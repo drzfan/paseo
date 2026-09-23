@@ -53,6 +53,12 @@ jobs:
         working-directory: packages/app
         run: npx expo prebuild --platform android --clean --non-interactive
 
+      - name: Disable R8 minify (OOM mitigation for validation build)
+        working-directory: packages/app/android
+        run: |
+          sed -i 's/minifyEnabled true/minifyEnabled false/g; s/enableProguardInReleaseBuilds true/enableProguardInReleaseBuilds false/g; s/shrinkResources true/shrinkResources false/g' app/build.gradle
+          grep -nE "minifyEnabled|enableProguard|shrinkResources" app/build.gradle || true
+
       - name: Disk check before gradle
         run: df -h / | tail -1
 
