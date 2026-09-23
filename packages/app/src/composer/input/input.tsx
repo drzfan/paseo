@@ -560,6 +560,7 @@ function MessageInputOverlay({
     | {
         isMuted: boolean;
         isVoiceSwitching: boolean;
+        partialTranscript?: string | null;
         toggleMute: () => void;
       }
     | null
@@ -599,6 +600,7 @@ function MessageInputOverlay({
       <RealtimeVoiceOverlay
         isMuted={voice.isMuted}
         isSwitching={voice.isVoiceSwitching}
+        partialTranscript={voice.partialTranscript}
         onToggleMute={voice.toggleMute}
         onStop={onRealtimeVoiceStop}
       />

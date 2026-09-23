@@ -8,11 +8,18 @@ import {
   type ReactNode,
 } from "react";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+import { isNative } from "@/constants/platform";
+import { useSettings } from "@/hooks/use-settings";
+import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
+import { dispatchComposerAgentMessage } from "@/composer/actions";
+import { createMessageSubmissionWriter } from "@/composer/submission/writer";
+import { OnDeviceVoiceSession } from "@/voice/ondevice/ondevice-voice-session";
 import { createAudioEngine } from "@/voice/audio-engine";
 import type { AudioEngine } from "@/voice/audio-engine-types";
 import {
   createVoiceRuntime,
+  type SpeechEngineChoice,
   type VoiceRuntime,
   type VoiceRuntimeSnapshot,
   type VoiceRuntimeTelemetrySnapshot,
@@ -32,6 +39,7 @@ const EMPTY_SNAPSHOT: VoiceRuntimeSnapshot = {
   isMuted: false,
   activeServerId: null,
   activeAgentId: null,
+  partialTranscript: null,
 };
 
 const EMPTY_TELEMETRY: VoiceRuntimeTelemetrySnapshot = {
@@ -112,9 +120,45 @@ interface VoiceProviderProps {
   children: ReactNode;
 }
 
+/**
+ * Send a finalized on-device transcript through the ordinary message channel,
+ * riding the composer dispatch pipeline so the user message lands in the chat
+ * timeline optimistically exactly like a typed send.
+ */
+function sendOnDeviceVoiceMessage(serverId: string, agentId: string, text: string): Promise<void> {
+  const client = getHostRuntimeStore().getClient(serverId);
+  if (!client) {
+    return Promise.reject(new Error("Host is not connected"));
+  }
+  return dispatchComposerAgentMessage({
+    client,
+    agentId,
+    text,
+    attachments: [],
+    encodeImages: async () => undefined,
+    submission: createMessageSubmissionWriter(serverId),
+    // A spoken follow-up always supersedes the running turn (barge-in).
+    activeTurnBehavior: "interrupt",
+  });
+}
+
+function abortOnDeviceVoiceTurn(serverId: string, agentId: string): Promise<void> {
+  const client = getHostRuntimeStore().getClient(serverId);
+  if (!client) {
+    return Promise.resolve();
+  }
+  return client.cancelAgent(agentId).catch(() => undefined);
+}
+
 export function VoiceProvider({ children }: VoiceProviderProps) {
   const engineRef = useRef<AudioEngine | null>(null);
   const runtimeRef = useRef<VoiceRuntime | null>(null);
+
+  // Latest speech-engine preference for the runtime's non-React callbacks.
+  const speechEngine = useSettings((current) => current.voiceSpeechEngine);
+  const languagePack = useSettings((current) => current.voiceLanguagePack);
+  const settingsRef = useRef({ speechEngine, languagePack });
+  settingsRef.current = { speechEngine, languagePack };
 
   if (!engineRef.current) {
     let runtime: VoiceRuntime | null = null;
@@ -135,6 +179,9 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
       },
     });
 
+    const readSpeechEngineChoice = (): SpeechEngineChoice =>
+      settingsRef.current.speechEngine ?? "cloud";
+
     runtime = createVoiceRuntime({
       engine,
       getServerInfo: (serverId) =>
@@ -145,6 +192,25 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
       deactivateKeepAwake: async (tag) => {
         await deactivateKeepAwake(tag);
       },
+      getSpeechEngineChoice: readSpeechEngineChoice,
+      onNotice: (kind) => {
+        if (kind === "onDeviceFallback") {
+          console.warn("[VoiceProvider] On-device speech unavailable; using cloud voice mode");
+        }
+      },
+      // On-device sessions only exist on native builds; web keeps cloud voice.
+      createOnDeviceSession: isNative
+        ? (events, serverId) =>
+            new OnDeviceVoiceSession(
+              {
+                engine,
+                sendMessage: (agentId, text) => sendOnDeviceVoiceMessage(serverId, agentId, text),
+                abortActiveTurn: (agentId) => abortOnDeviceVoiceTurn(serverId, agentId),
+                languagePack: settingsRef.current.languagePack ?? "en",
+              },
+              events,
+            )
+        : undefined,
     });
 
     engineRef.current = engine;

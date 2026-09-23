@@ -403,6 +403,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         event.type === "turn_canceled"
       ) {
         voiceRuntime?.onTurnEvent(serverId, agentId, event.type);
+        voiceRuntime?.onAgentStreamEvent(serverId, agentId, event);
       }
       const turnLiveness = deriveAgentStreamTurnLiveness([
         { event: streamEvent, seq, epoch, timestamp: parsedTimestamp },

@@ -3,6 +3,12 @@ import type { AgentStreamEventPayload, SessionOutboundMessage } from "@getpaseo/
 import { resolveVoiceUnavailableMessage } from "@/utils/server-info-capabilities";
 import type { DaemonServerInfo } from "@/stores/session-store";
 import type { AudioEngine } from "@/voice/audio-engine-types";
+import type {
+  OnDeviceErrorContext,
+  OnDevicePhase,
+  OnDeviceSessionEvents,
+  OnDeviceVoiceSession,
+} from "@/voice/ondevice/ondevice-voice-session";
 import {
   THINKING_TONE_NATIVE_PCM_BASE64,
   THINKING_TONE_NATIVE_PCM_DURATION_MS,
@@ -37,6 +43,9 @@ export type VoiceRuntimePhase =
   | "playing"
   | "stopping";
 
+/** Which stack drives speech for a voice session. */
+export type SpeechEngineChoice = "cloud" | "onDevice";
+
 export interface VoiceRuntimeSnapshot {
   phase: VoiceRuntimePhase;
   isVoiceMode: boolean;
@@ -44,6 +53,8 @@ export interface VoiceRuntimeSnapshot {
   isMuted: boolean;
   activeServerId: string | null;
   activeAgentId: string | null;
+  /** On-device sessions only: interim transcript for display; null when idle. */
+  partialTranscript: string | null;
 }
 
 export interface VoiceRuntimeTelemetrySnapshot {
@@ -66,6 +77,15 @@ export interface VoiceRuntimeDeps {
   getServerInfo(serverId: string): DaemonServerInfo | null;
   activateKeepAwake(tag: string): Promise<void>;
   deactivateKeepAwake(tag: string): Promise<void>;
+  /** On-device session factory; absent (web, SDK unavailable) keeps voice on the cloud path. */
+  createOnDeviceSession?: (
+    events: OnDeviceSessionEvents,
+    serverId: string,
+  ) => OnDeviceVoiceSession | null;
+  /** Current speech engine preference, read each time a voice session starts. */
+  getSpeechEngineChoice?: () => SpeechEngineChoice;
+  /** Non-fatal runtime notices surfaced to the user (e.g. fallback to cloud). */
+  onNotice?: (kind: "onDeviceFallback") => void;
 }
 
 interface RuntimeSessionState {
@@ -88,6 +108,8 @@ interface RuntimeState {
   segmentDurationTimer: ReturnType<typeof setInterval> | null;
   lastDisplayVolumePublishMs: number;
   serverSpeechStartedAt: number | null;
+  onDeviceSession: OnDeviceVoiceSession | null;
+  onDeviceActive: boolean;
 }
 
 type AudioOutputPayload = Extract<SessionOutboundMessage, { type: "audio_output" }>["payload"];
@@ -131,6 +153,7 @@ const INITIAL_SNAPSHOT: VoiceRuntimeSnapshot = {
   isMuted: false,
   activeServerId: null,
   activeAgentId: null,
+  partialTranscript: null,
 };
 
 const INITIAL_TELEMETRY: VoiceRuntimeTelemetrySnapshot = {
@@ -148,7 +171,8 @@ function snapshotsEqual(left: VoiceRuntimeSnapshot, right: VoiceRuntimeSnapshot)
     left.isVoiceSwitching === right.isVoiceSwitching &&
     left.isMuted === right.isMuted &&
     left.activeServerId === right.activeServerId &&
-    left.activeAgentId === right.activeAgentId
+    left.activeAgentId === right.activeAgentId &&
+    left.partialTranscript === right.partialTranscript
   );
 }
 
@@ -173,6 +197,7 @@ export interface VoiceRuntime {
   handleCapturePcm(chunk: Uint8Array): void;
   handleCaptureVolume(level: number): void;
   handleAudioOutput(serverId: string, payload: AudioOutputPayload): void;
+  onAgentStreamEvent(serverId: string, agentId: string, event: AgentStreamEventPayload): void;
   startVoice(serverId: string, agentId: string): Promise<void>;
   stopVoice(): Promise<void>;
   destroy(): Promise<void>;
@@ -201,6 +226,8 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
     segmentDurationTimer: null,
     lastDisplayVolumePublishMs: 0,
     serverSpeechStartedAt: null,
+    onDeviceSession: null,
+    onDeviceActive: false,
   };
   const playback: RuntimePlaybackState = {
     groups: new Map(),
@@ -558,6 +585,10 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
   async function performLocalStop(): Promise<void> {
     stopCue();
     uploader.reset();
+    const onDeviceSession = state.onDeviceSession;
+    state.onDeviceSession = null;
+    state.onDeviceActive = false;
+    await onDeviceSession?.stop().catch(() => undefined);
     resetPlaybackState();
     deps.engine.stop();
     deps.engine.clearQueue();
@@ -571,7 +602,8 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
     if (
       !state.snapshot.isVoiceMode ||
       state.snapshot.activeServerId !== serverId ||
-      !state.snapshot.activeAgentId
+      !state.snapshot.activeAgentId ||
+      state.onDeviceActive // daemon never entered voice mode; nothing to resync
     ) {
       return;
     }
@@ -587,6 +619,76 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       state.transportReady = true;
     } finally {
       patchSnapshot((prev) => ({ ...prev, isVoiceSwitching: false }));
+    }
+  }
+
+  /** Map a turn event onto the on-device session's outcome vocabulary. */
+  function toOnDeviceTurnOutcome(eventType: TurnEventType): "completed" | "failed" | "canceled" {
+    if (eventType === "turn_completed") return "completed";
+    if (eventType === "turn_canceled") return "canceled";
+    return "failed";
+  }
+
+  /** Map an on-device session phase onto the runtime phase machine. */
+  function mapOnDevicePhase(phase: OnDevicePhase): void {
+    if (phase === "listening") {
+      patchSnapshot((prev) => ({ ...prev, phase: "listening" }));
+      return;
+    }
+    // transcribing/submitting/waiting all read as "waiting for the agent";
+    // narration start/finish events drive the playing phase separately.
+    patchSnapshot((prev) => ({ ...prev, phase: "waiting" }));
+  }
+
+  function buildOnDeviceEvents(serverId: string): OnDeviceSessionEvents {
+    return {
+      onPhase: (phase) => mapOnDevicePhase(phase),
+      onPartialTranscript: (text) => {
+        patchSnapshot((prev) => ({ ...prev, partialTranscript: text }));
+      },
+      onFinalTranscript: () => {
+        patchSnapshot((prev) => ({ ...prev, partialTranscript: null }));
+      },
+      onError: (error, context: OnDeviceErrorContext) => {
+        console.error(`[VoiceRuntime#${instanceId}] On-device voice error (${context}):`, error);
+        if (context === "vad" || context === "init") {
+          // Segmentation or the SDK itself is dead; the session cannot continue.
+          void performLocalStop();
+        }
+        // stt/send: the utterance is lost, keep listening. tts: the reply stays
+        // visible in chat, narration is degraded — both non-fatal.
+      },
+      onNarrationStarted: () => {
+        api.onAssistantAudioStarted(serverId);
+      },
+      onNarrationFinished: () => {
+        api.onAssistantAudioFinished(serverId);
+      },
+    };
+  }
+
+  /**
+   * Try to bring up an on-device session. False means unavailable or failed —
+   * the caller proceeds on the cloud path (with a user notice on failure).
+   */
+  async function tryStartOnDeviceSession(serverId: string, agentId: string): Promise<boolean> {
+    const factory = deps.createOnDeviceSession;
+    if (!factory) return false;
+    const onDeviceSession = factory(buildOnDeviceEvents(serverId), serverId);
+    if (!onDeviceSession) return false;
+    try {
+      await onDeviceSession.start(agentId);
+      state.onDeviceSession = onDeviceSession;
+      state.onDeviceActive = true;
+      return true;
+    } catch (error) {
+      console.warn(
+        `[VoiceRuntime#${instanceId}] On-device voice unavailable, falling back to cloud:`,
+        error,
+      );
+      deps.onNotice?.("onDeviceFallback");
+      await onDeviceSession.stop().catch(() => undefined);
+      return false;
     }
   }
 
@@ -648,6 +750,10 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       if (!state.snapshot.isVoiceMode || state.snapshot.isMuted) {
         return;
       }
+      if (state.onDeviceActive) {
+        state.onDeviceSession?.pushPcm(chunk);
+        return;
+      }
       uploader.pushPcmChunk(chunk);
     },
 
@@ -673,6 +779,9 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
     },
 
     handleAudioOutput(serverId, payload) {
+      if (state.onDeviceActive) {
+        return; // cloud-voice audio never flows in on-device mode
+      }
       if (
         serverId !== state.snapshot.activeServerId ||
         !state.snapshot.isVoiceMode ||
@@ -726,10 +835,16 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       }
 
       const serverInfo = deps.getServerInfo(serverId);
-      const unavailableMessage = resolveVoiceUnavailableMessage({
-        serverInfo,
-        mode: "voice",
-      });
+      const preferOnDevice =
+        deps.getSpeechEngineChoice?.() === "onDevice" && deps.createOnDeviceSession !== undefined;
+      // On-device speech bypasses the daemon voice stack entirely; the cloud
+      // capability gate only guards the cloud path (and the fallback below).
+      const unavailableMessage = preferOnDevice
+        ? null
+        : resolveVoiceUnavailableMessage({
+            serverInfo,
+            mode: "voice",
+          });
       if (unavailableMessage) {
         throw new Error(unavailableMessage);
       }
@@ -766,8 +881,13 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
         });
 
         await deps.engine.initialize();
-        await session.adapter.setVoiceMode(true, agentId);
-        enabledCurrentVoiceMode = true;
+        if (preferOnDevice) {
+          await tryStartOnDeviceSession(serverId, agentId);
+        }
+        if (!state.onDeviceActive) {
+          await session.adapter.setVoiceMode(true, agentId);
+          enabledCurrentVoiceMode = true;
+        }
         await deps.engine.startCapture();
         if (state.generation !== generation) {
           return;
@@ -806,6 +926,10 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       try {
         stopCue();
         uploader.reset();
+        const onDeviceSession = state.onDeviceSession;
+        state.onDeviceSession = null;
+        state.onDeviceActive = false;
+        await onDeviceSession?.stop();
         state.transportReady = false;
         resetPlaybackState();
         deps.engine.stop();
@@ -894,6 +1018,9 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
     },
 
     onTranscriptionResult(serverId, text) {
+      if (state.onDeviceActive) {
+        return; // daemon STT events only arrive in cloud voice mode
+      }
       if (serverId !== state.snapshot.activeServerId || !state.snapshot.isVoiceMode) {
         return;
       }
@@ -911,6 +1038,9 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
     },
 
     onServerSpeechStateChanged(serverId, isSpeaking) {
+      if (state.onDeviceActive) {
+        return; // daemon VAD events only arrive in cloud voice mode
+      }
       if (serverId !== state.snapshot.activeServerId || !state.snapshot.isVoiceMode) {
         return;
       }
@@ -937,6 +1067,22 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       reconcileCue();
     },
 
+    onAgentStreamEvent(serverId, agentId, event) {
+      if (!state.onDeviceActive || !state.onDeviceSession) {
+        return;
+      }
+      if (serverId !== state.snapshot.activeServerId || agentId !== state.snapshot.activeAgentId) {
+        return;
+      }
+      if (event.type === "timeline" && event.item.type === "assistant_message") {
+        state.onDeviceSession.handleTimelineEvent(agentId, {
+          type: event.item.type,
+          text: event.item.text,
+          messageId: event.item.messageId,
+        });
+      }
+    },
+
     onTurnEvent(serverId, agentId, eventType) {
       if (
         !state.snapshot.isVoiceMode ||
@@ -947,6 +1093,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       }
 
       if (eventType === "turn_started") {
+        state.onDeviceSession?.handleTurnStarted(agentId);
         state.turnInProgress = true;
         if (state.snapshot.phase !== "playing") {
           patchSnapshot((prev) => ({ ...prev, phase: "waiting" }));
@@ -956,6 +1103,7 @@ export function createVoiceRuntime(deps: VoiceRuntimeDeps): VoiceRuntime {
       }
 
       state.turnInProgress = false;
+      state.onDeviceSession?.handleTurnFinished(agentId, toOnDeviceTurnOutcome(eventType));
       if (state.snapshot.phase !== "playing") {
         patchSnapshot((prev) => ({ ...prev, phase: "listening" }));
       }

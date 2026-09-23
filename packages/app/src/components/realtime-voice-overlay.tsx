@@ -1,7 +1,7 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { Mic, MicOff, Square } from "lucide-react-native";
 import { FOOTER_HEIGHT } from "@/constants/layout";
@@ -11,6 +11,8 @@ import { VolumeMeter } from "./volume-meter";
 interface RealtimeVoiceOverlayProps {
   isMuted: boolean;
   isSwitching: boolean;
+  /** On-device sessions only: live STT preview; omitted keeps the overlay unchanged. */
+  partialTranscript?: string | null;
   onToggleMute: () => void;
   onStop: () => void;
 }
@@ -21,6 +23,7 @@ const OVERLAY_VERTICAL_PADDING = (FOOTER_HEIGHT - OVERLAY_BUTTON_SIZE) / 2;
 export function RealtimeVoiceOverlay({
   isMuted,
   isSwitching,
+  partialTranscript,
   onToggleMute,
   onStop,
 }: RealtimeVoiceOverlayProps) {
@@ -42,6 +45,11 @@ export function RealtimeVoiceOverlay({
   );
   return (
     <View style={styles.container}>
+      {typeof partialTranscript === "string" && partialTranscript.length > 0 ? (
+        <Text style={styles.partialTranscript} numberOfLines={1}>
+          {partialTranscript}
+        </Text>
+      ) : null}
       <View style={styles.meterContainer}>
         <VolumeMeter
           volume={volume}
@@ -104,6 +112,11 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
+  },
+  partialTranscript: {
+    flexShrink: 1,
+    color: theme.colors.foreground,
+    opacity: 0.8,
   },
   meterContainer: {
     flex: 1,

@@ -32,6 +32,10 @@ export type ReleaseChannel = "stable" | "beta";
 export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
 export type PullRequestOpenLocation = "main" | "side" | "explorer";
+/** Speech engine for voice mode: daemon-side cloud pipeline or on-device passthrough. */
+export type VoiceSpeechEngine = "cloud" | "onDevice";
+/** Language pack for on-device speech models. */
+export type VoiceLanguagePack = "en" | "zh";
 /** What a sidebar workspace row shows in the space to the right of its title. */
 export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
 export type ToolCallDetailLevel = "overview" | "detailed";
@@ -92,6 +96,8 @@ export interface AppSettings {
   /** Desktop-only preferences for implicit opens into the ordinary side pane. */
   openInSidePane: OpenInSidePanePreferences;
   pullRequestOpenLocation: PullRequestOpenLocation;
+  voiceSpeechEngine: VoiceSpeechEngine;
+  voiceLanguagePack: VoiceLanguagePack;
 }
 
 export type AppSettingsUpdate =
@@ -144,6 +150,8 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   vimKeybindings: false,
   openInSidePane: DEFAULT_OPEN_IN_SIDE_PANE_PREFERENCES,
   pullRequestOpenLocation: "explorer",
+  voiceSpeechEngine: "onDevice",
+  voiceLanguagePack: "en",
 };
 
 export const DEFAULT_APP_SETTINGS: Settings = {
@@ -260,6 +268,8 @@ const StoredAppSettingsSchema = z
         legacyPullRequestsInSidePane: undefined,
       }),
     pullRequestOpenLocation: z.enum(["main", "side", "explorer"]).optional(),
+    voiceSpeechEngine: z.enum(["cloud", "onDevice"]).optional(),
+    voiceLanguagePack: z.enum(["en", "zh"]).optional(),
     // COMPAT(explorerSidebarRouting): replaced by source-specific side-pane preferences in v0.6.
     openSupportingTabsInSidePanel: z.boolean().optional().catch(undefined),
     // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
@@ -288,6 +298,8 @@ const StoredAppSettingsSchema = z
       openInSidePane,
       pullRequestOpenLocation:
         stored.pullRequestOpenLocation ?? (legacyPullRequestsInSidePane ? "side" : "explorer"),
+      voiceSpeechEngine: stored.voiceSpeechEngine ?? "cloud",
+      voiceLanguagePack: stored.voiceLanguagePack ?? "en",
       uiBaseFontSize,
       contentFontSize: stored.contentFontSize ?? uiBaseFontSize,
       sidebarChecksDisplay,

@@ -46,7 +46,10 @@ jobs:
           npm run build:app-deps
           npm run build:terminal-webview --workspace=@getpaseo/app
 
-      - name: "Expo prebuild (CNG, 生成 android/)"
+      - name: Install CMake 3.30.5 (required by runanywhere_core NDK build)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "cmake;3.30.5" >/dev/null
+
+      - name: Expo prebuild (CNG, 生成 android/)
         working-directory: packages/app
         run: npx expo prebuild --platform android --clean --non-interactive
 
