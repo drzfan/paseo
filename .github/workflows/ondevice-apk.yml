@@ -1,0 +1,72 @@
+name: Android APK (self-hosted runner build)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/on-device-voice
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # packages/app/app.config.js 读它决定变体；production => sh.paseo / "Paseo"
+  # prebuild 和 gradle 打 bundle 两步都必须带着（docs/android.md 的要求）
+  APP_VARIANT: production
+  EXPO_NO_TELEMETRY: "1"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"        # .tool-versions pin nodejs 22.20.0；上游 ci.yml 同款
+          cache: "npm"
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"        # .tool-versions pin java 21（RN 0.81 最低 17）
+          cache: "gradle"           # 缓存 ~/.gradle（wrapper/AGP/kotlin/依赖），二次构建省 ~10min
+
+      - name: Install JS dependencies
+        run: node scripts/npm-retry.mjs ci
+        # npm ci 会触发根 postinstall(scripts/postinstall-patches.mjs) 打 patches/*.patch，不能 --ignore-scripts
+
+      - name: Build workspace JS deps
+        # 等价于 packages/app package.json 里的 eas-build-post-install 钩子（EAS 会自动跑，这里手动跑）
+        run: |
+          npm run build:app-deps
+          npm run build:terminal-webview --workspace=@getpaseo/app
+
+      - name: Expo prebuild (CNG: 生成 android/)
+        working-directory: packages/app
+        run: npx expo prebuild --platform android --clean --non-interactive
+
+      - name: Gradle assembleRelease
+        working-directory: packages/app/android
+        run: >
+          ./gradlew :app:assembleRelease
+          -PreactNativeArchitectures=arm64-v8a
+          -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease
+          -x generateReleaseLintModel -x generateReleaseLintVitalModel
+          --stacktrace
+        # ↑ lint 跳过参数逐字抄自 packages/app/eas.json 的 production-apk profile
+        #
+        # 可选（APK 体积/时长大降）：只出 arm64 单 ABI。
+        # runanywhere 的 build.gradle、Skia、Nitro 都认 rootProject 的 reactNativeArchitectures 属性：
+        #   ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a ...
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: paseo-android-apk
+          path: packages/app/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
