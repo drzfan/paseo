@@ -32,6 +32,7 @@ class MemoryStorage implements ReplicaRowStore {
   writes = 0;
   cleanups = 0;
   nextWriteFailure: Error | null = null;
+  persistentWriteFailure: Error | null = null;
   readGate: Promise<void> | null = null;
   onRead: (() => void) | null = null;
 
@@ -71,6 +72,7 @@ class MemoryStorage implements ReplicaRowStore {
 
   async apply(changes: ReplicaRowChanges): Promise<void> {
     this.writes += 1;
+    if (this.persistentWriteFailure) throw this.persistentWriteFailure;
     if (this.nextWriteFailure) {
       const error = this.nextWriteFailure;
       this.nextWriteFailure = null;
@@ -430,6 +432,24 @@ describe("ReplicaCache", () => {
     deleteDirectory(cache, SERVER_ID);
 
     expect(await cache.readWorkspace(SERVER_ID, "workspace-1")).toBeUndefined();
+  });
+
+  it("gives up a read instead of retrying while the store keeps rejecting writes", async () => {
+    const storage = new MemoryStorage();
+    const cache = createCache(storage);
+    commitDirectory(cache, SERVER_ID, directory());
+    await cache.flush();
+    storage.persistentWriteFailure = new Error("QuotaExceededError");
+    storage.reads.length = 0;
+    // Bounds the failure: without it the read loop never returns and only stops on heap exhaustion.
+    storage.onRead = () => {
+      if (storage.reads.length > 5) throw new Error("read loop did not stop");
+    };
+
+    deleteDirectory(cache, SERVER_ID);
+
+    expect(await cache.readWorkspace(SERVER_ID, "workspace-1")).toBeUndefined();
+    expect(storage.reads.length).toBeLessThanOrEqual(1);
   });
 
   it("discards a durable read when the host changes while it is in flight", async () => {
