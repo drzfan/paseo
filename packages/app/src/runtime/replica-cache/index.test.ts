@@ -452,6 +452,19 @@ describe("ReplicaCache", () => {
     expect(storage.reads.length).toBeLessThanOrEqual(1);
   });
 
+  it("still reads a host whose rows are stored when another host's write is rejected", async () => {
+    const storage = new MemoryStorage();
+    const cache = new ReplicaCache(storage, noLegacyCleanup);
+    cache.setHosts([SERVER_ID, "other-host"]);
+    commitDirectory(cache, SERVER_ID, directory());
+    await cache.flush();
+    storage.persistentWriteFailure = new Error("QuotaExceededError");
+
+    commitDirectory(cache, "other-host", directory());
+
+    expect((await cache.readWorkspace(SERVER_ID, "workspace-1"))?.workspace.id).toBe("workspace-1");
+  });
+
   it("discards a durable read when the host changes while it is in flight", async () => {
     const storage = new MemoryStorage();
     const cache = createCache(storage);

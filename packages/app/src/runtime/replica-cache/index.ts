@@ -983,10 +983,11 @@ export class ReplicaCache {
     try {
       await this.prepareStore();
       while (this.activeServerIds.has(serverId)) {
-        // A read may only answer from rows the store already holds, so it waits for the accepted
-        // commits to land. A store that rejects them will keep rejecting them: fail closed rather
-        // than re-attempt the write on every pass.
-        if (!(await this.syncPending())) return [];
+        // A read may only answer from rows the store already holds, so it waits for this host's
+        // accepted commits to land. A store that rejects them will keep rejecting them: fail closed
+        // rather than re-attempt the write on every pass. A write rejected for another host leaves
+        // this host's stored rows readable.
+        if (!(await this.syncPending()) && this.hasPendingHostChanges(serverId)) return [];
         const revision = this.hostRevisions.get(serverId) ?? 0;
         const rows = await this.rowStore.read(serverId, kinds, ids);
         if (this.canReadHostRevision(serverId, revision)) return rows;
