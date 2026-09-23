@@ -46,7 +46,7 @@ jobs:
           npm run build:app-deps
           npm run build:terminal-webview --workspace=@getpaseo/app
 
-      - name: Expo prebuild (CNG: 生成 android/)
+      - name: "Expo prebuild (CNG, 生成 android/)"
         working-directory: packages/app
         run: npx expo prebuild --platform android --clean --non-interactive
 
