@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
 import { MessageReceipts } from "./message-receipts/index.js";
+import { MailboxService } from "./mailbox/mailbox-service.js";
 import { WebSocket, WebSocketServer } from "ws";
 import type { IncomingMessage, Server as HTTPServer } from "http";
 import { join } from "path";
@@ -534,6 +535,8 @@ export class VoiceAssistantWebSocketServer {
   private readonly agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
   private readonly messageReceipts: MessageReceipts;
+  /** 信箱（P7-M1）：daemon 内单实例，跨 session 共享（写入方与订阅者在不同连接）。 */
+  private readonly mailboxService: MailboxService;
   private readonly creationService: CreationService;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
@@ -674,6 +677,7 @@ export class VoiceAssistantWebSocketServer {
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
     this.messageReceipts = new MessageReceipts(join(paseoHome, "agent-requests"));
+    this.mailboxService = new MailboxService(join(paseoHome, "mailboxes"), logger);
     this.creationService = new CreationService(
       join(paseoHome, "creations"),
       this.logger.child({ module: "creation" }),
@@ -1455,6 +1459,7 @@ export class VoiceAssistantWebSocketServer {
       worktreesRoot: this.worktreesRoot,
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,
+      mailbox: this.mailboxService,
       messageReceipts: this.messageReceipts,
       creationService: this.creationService,
       projectRegistry: this.projectRegistry,

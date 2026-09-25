@@ -133,6 +133,7 @@ import {
 } from "./agent/agent-sdk-types.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
+import type { MailboxService } from "./mailbox/mailbox-service.js";
 import {
   ImportSessionsRequestError,
   importProviderSession,
@@ -453,6 +454,8 @@ export interface SessionOptions {
   worktreesRoot?: string;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
+  /** 信箱服务（P7-M1）：daemon 内单实例，跨 session 共享；缺席时 mailbox 消息面不可用。 */
+  mailbox?: MailboxService;
   messageReceipts: Pick<MessageReceipts, "send">;
   creationService: Pick<CreationService, "create" | "subscribe">;
   projectRegistry: ProjectRegistry;
@@ -712,6 +715,7 @@ export class Session {
 
   private agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
+  private readonly mailbox: MailboxService | undefined;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly directorySync: DirectorySyncService;
@@ -883,6 +887,9 @@ export class Session {
     });
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
+    // 不用 ?? 兑底（constructor 复杂度已顶满 20，一个 ?? 就超标）——可选链与真值检查
+    // 对 undefined 与 null 同效，直接透传即可
+    this.mailbox = options.mailbox;
     this.projectRegistry = projectRegistry;
     this.workspaceRegistry = workspaceRegistry;
     this.directorySync = resolveDirectorySync(directorySync);
@@ -2660,11 +2667,95 @@ export class Session {
         );
         return undefined;
       }
+      // Mailbox（P7-M1）：与 timeline/events 订阅同族（不另起 dispatch 链环——
+      // dispatchInboundMessage 的复杂度已顶满）。存储与订阅注册在 daemon 内单实例
+      // MailboxService（跨 session 共享——写入方与订阅者通常在不同 WS 连接里）；
+      // 订阅生命周期释 delivery.begin（stop 回调随 socket 断连自动解绑）。
+      case "mailbox.push.request":
+        return this.handleMailboxPush(msg);
+      case "mailbox.subscribe.request":
+        return this.handleMailboxSubscribe(msg, source);
       case "agent.fork_context.request":
         return this.handleAgentForkContextRequest(msg);
       default:
         return undefined;
     }
+  }
+
+  /**
+   * Mailbox（P7-M1）：机器消息信箱面（路由见 dispatchAgentTimelineMessage 内注释）。
+   */
+  private async handleMailboxPush(
+    msg: Extract<SessionInboundMessage, { type: "mailbox.push.request" }>,
+    source?: object,
+  ): Promise<void> {
+    if (!this.mailbox) {
+      this.emitForSource(
+        {
+          type: "rpc_error",
+          payload: {
+            requestId: msg.requestId,
+            requestType: msg.type,
+            error: "mailbox unavailable",
+            code: "handler_error",
+          },
+        },
+        source,
+      );
+      return;
+    }
+    const result = await this.mailbox.push(msg.agentId, msg.from, msg.text);
+    this.emitForSource(
+      {
+        type: "mailbox.push.response",
+        payload: { requestId: msg.requestId, id: result.id, queued: result.queued },
+      },
+      source,
+    );
+  }
+
+  private handleMailboxSubscribe(
+    msg: Extract<SessionInboundMessage, { type: "mailbox.subscribe.request" }>,
+    source?: object,
+  ): Promise<void> | undefined {
+    if (!this.mailbox) {
+      this.emitForSource(
+        {
+          type: "rpc_error",
+          payload: {
+            requestId: msg.requestId,
+            requestType: msg.type,
+            error: "mailbox unavailable",
+            code: "handler_error",
+          },
+        },
+        source,
+      );
+      return;
+    }
+    const owner = this.delivery.begin("mailbox", undefined, () => {
+      // socket 断连/显式 release：从信箱订阅登记表移除（水位线不动，重订重放）
+      this.mailbox?.unsubscribe(agentId, subscriber);
+    });
+    const subscriber = {
+      emit: (message: Extract<SessionOutboundMessage, { type: "mailbox.mail" }>) =>
+        owner.emit(message),
+    };
+    const mailbox = this.mailbox;
+    const agentId = msg.agentId;
+    // 排空在串行段异步进行，登记是同步的（subscribe 首行）——响应可立即回
+    void mailbox.subscribe(agentId, subscriber).catch((error: unknown) => {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.sessionLogger.error({ err }, "mailbox subscribe drain failed");
+    });
+    this.emitForSource(
+      {
+        type: "mailbox.subscribe.response",
+        payload: { requestId: msg.requestId, subscriptionId: owner.responseId },
+      },
+      source,
+    );
+    return undefined;
   }
 
   private dispatchHubExecutionMessage(msg: SessionInboundMessage): Promise<void> | undefined {

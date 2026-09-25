@@ -1876,6 +1876,32 @@ export const SetAgentTimelineSubscriptionRequestMessageSchema = z.object({
   requestId: z.string(),
 });
 
+/**
+ * Mailbox（P7-M1）：机器消息信箱。
+ *
+ * 语义：daemon 给每个 agent 开一个收件箱（`<PASEO_HOME>/mailboxes/<agentId>.jsonl`，
+ * append-only，daemon 单写者）。写入方只往信箱写（transport 层哑信封）；住户
+ * （pi 扩展）订阅自己的信箱，收到即自行投递给模型——时间线是发件箱（公开、
+ * 可订阅），信箱是收件箱（定向、住户订阅），daemon 成为对称通信枢纽。
+ * 投递语义 at-least-once：推送后落 delivered 水位线，崩溃窗口（推送后、水位线
+ * 落盘前）重启重放——通知可重不可丢，重复无害（住户侧幂等处理）。
+ */
+export const MailboxPushRequestMessageSchema = z.object({
+  type: z.literal("mailbox.push.request"),
+  agentId: z.string(),
+  /** 写入方自报身份（自由字符串，如 "webhook" / "pbash"；daemon 内部调用全权，
+   * WS 面仅限已认证会话——M1 的 ACL 现状，见 spec §四.3）。 */
+  from: z.string(),
+  text: z.string(),
+  requestId: z.string(),
+});
+
+export const MailboxSubscribeRequestMessageSchema = z.object({
+  type: z.literal("mailbox.subscribe.request"),
+  agentId: z.string(),
+  requestId: z.string(),
+});
+
 export const AgentForkContextRequestMessageSchema = z.object({
   type: z.literal("agent.fork_context.request"),
   agentId: z.string(),
@@ -3245,6 +3271,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProviderSubagentListRequestMessageSchema,
   ProviderSubagentTimelineRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
+  MailboxPushRequestMessageSchema,
+  MailboxSubscribeRequestMessageSchema,
   AgentForkContextRequestMessageSchema,
   SetAgentModeRequestMessageSchema,
   SetAgentModelRequestMessageSchema,
@@ -4747,6 +4775,41 @@ export const SetAgentTimelineSubscriptionResponseMessageSchema = z.object({
     subscriptionId: z.string().optional(),
     agentIds: z.array(z.string()),
     requestId: z.string(),
+  }),
+});
+
+export const MailboxPushResponseMessageSchema = z.object({
+  type: z.literal("mailbox.push.response"),
+  payload: z.object({
+    requestId: z.string(),
+    /** 已生成的信件 id（无论是否即时投递）。 */
+    id: z.string(),
+    /** true = 无订阅者，只积压；false = 已即时推送给订阅者。 */
+    queued: z.boolean(),
+  }),
+});
+
+export const MailboxSubscribeResponseMessageSchema = z.object({
+  type: z.literal("mailbox.subscribe.response"),
+  payload: z.object({
+    subscriptionId: z.string(),
+    requestId: z.string(),
+  }),
+});
+
+/** 信箱推送事件（daemon → 订阅者；一批 = 一次水位线推进）。 */
+export const MailboxMailMessageSchema = z.object({
+  type: z.literal("mailbox.mail"),
+  payload: z.object({
+    agentId: z.string(),
+    batch: z.array(
+      z.object({
+        id: z.string(),
+        from: z.string(),
+        text: z.string(),
+        ts: z.number(),
+      }),
+    ),
   }),
 });
 
@@ -6809,6 +6872,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProviderSubagentTimelineResponseMessageSchema,
   ProviderSubagentUpdateMessageSchema,
   SetAgentTimelineSubscriptionResponseMessageSchema,
+  MailboxPushResponseMessageSchema,
+  MailboxSubscribeResponseMessageSchema,
+  MailboxMailMessageSchema,
   AgentAttentionRequiredMessageSchema,
   AgentForkContextResponseMessageSchema,
   CancelAgentResponseMessageSchema,
@@ -6972,6 +7038,12 @@ export type WorkspaceSetupRunResponseMessage = z.infer<
 >;
 export type AgentStreamMessage = z.infer<typeof AgentStreamMessageSchema>;
 export type AgentStatusMessage = z.infer<typeof AgentStatusMessageSchema>;
+export type MailboxPushRequestMessage = z.infer<typeof MailboxPushRequestMessageSchema>;
+export type MailboxPushResponseMessage = z.infer<typeof MailboxPushResponseMessageSchema>;
+export type MailboxSubscribeRequestMessage = z.infer<typeof MailboxSubscribeRequestMessageSchema>;
+export type MailboxSubscribeResponseMessage = z.infer<typeof MailboxSubscribeResponseMessageSchema>;
+export type MailboxMailMessage = z.infer<typeof MailboxMailMessageSchema>;
+export type MailboxMailItem = MailboxMailMessage["payload"]["batch"][number];
 export type ProjectCheckoutLitePayload = z.infer<typeof ProjectCheckoutLitePayloadSchema>;
 export type ProjectPlacementPayload = z.infer<typeof ProjectPlacementPayloadSchema>;
 export type WorkspaceStateBucket = z.infer<typeof WorkspaceStateBucketSchema>;
