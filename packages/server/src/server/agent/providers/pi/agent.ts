@@ -59,11 +59,7 @@ import {
   formatProviderDiagnosticError,
   toDiagnosticErrorMessage,
 } from "../diagnostic-utils.js";
-import {
-  getUserMessageText,
-  streamPiHistory,
-  type PiCapturedUserMessageEntry,
-} from "./history-mapper.js";
+import { streamPiHistory, type PiCapturedUserMessageEntry } from "./history-mapper.js";
 import { materializeProviderImage } from "../provider-image-output.js";
 import { PiCliRuntime } from "./cli-runtime.js";
 import { revertPiConversation } from "./rewind.js";
@@ -2408,15 +2404,9 @@ export class PiRpcAgentSession implements AgentSession {
       return;
     }
     if (event.message.role === "custom") {
-      const text = getUserMessageText(event.message.content);
-      if (text) {
-        this.emit({
-          type: "timeline",
-          provider: this.provider,
-          turnId,
-          item: { type: "assistant_message", text },
-        });
-      }
+      // [pbash/custom-notification] custom 消息是扩展投给模型的机器载荷：
+      // LLM 投递由 pi 侧序列化完成（custom→user），显示层不发条目——人类视图
+      // 由卡片（pbash-card/agent-notify 插件）承担。上游修复后本补丁退役。
       if (!this.activeTurnStarted) {
         this.completeTurn(turnId, []);
       }

@@ -121,15 +121,9 @@ export class PiHistoryMapper {
     if (mappedEvent) {
       return [mappedEvent];
     }
-    return text
-      ? [
-          {
-            type: "timeline",
-            provider: this.provider,
-            item: { type: "assistant_message", text },
-          },
-        ]
-      : [];
+    // [pbash/custom-notification] 无钩子接管的 custom 消息在显示层不发条目
+    // （机器载荷只进 LLM 上下文；人类视图由卡片承担），与实时路径对齐。
+    return [];
   }
 
   private mapAssistantMessage(

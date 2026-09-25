@@ -128,16 +128,11 @@ describe("Pi history mapper", () => {
     ]);
   });
 
-  test("replays non-notice custom messages as assistant text, matching the live path", async () => {
+  test("replays custom messages as no timeline items, matching the live path", async () => {
+    // [pbash/custom-notification] custom = 机器载荷，重放与实时路径一致：零条目。
     await expect(
       collectHistory([{ role: "custom", content: "Extension command output" }]),
-    ).resolves.toEqual([
-      {
-        type: "timeline",
-        provider: "pi",
-        item: { type: "assistant_message", text: "Extension command output" },
-      },
-    ]);
+    ).resolves.toEqual([]);
   });
 
   test("uses Pi tree entry ids for replayed user messages", async () => {

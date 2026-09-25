@@ -942,7 +942,7 @@ describe("PiRpcAgentSession", () => {
     ]);
   });
 
-  test("surfaces Pi extension command messages and completes when no agent turn starts", async () => {
+  test("emits no timeline item for custom messages and completes when no agent turn starts", async () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();
 
@@ -955,13 +955,9 @@ describe("PiRpcAgentSession", () => {
       },
     });
 
-    expect(events.timelineAndCompletionEvents()).toEqual([
-      {
-        type: "timeline",
-        item: { type: "assistant_message", text: "Extension command output" },
-      },
-      { type: "turn_completed" },
-    ]);
+    // [pbash/custom-notification] custom = 机器载荷，只进 LLM 上下文，
+    // 显示层零条目；turn 簿记不受影响。
+    expect(events.timelineAndCompletionEvents()).toEqual([{ type: "turn_completed" }]);
   });
 
   test("settles an autonomous turn triggered by a Pi extension custom message", async () => {
@@ -986,9 +982,8 @@ describe("PiRpcAgentSession", () => {
       willRetry: false,
     });
 
-    expect(events.timelineItems()).toEqual([
-      { type: "assistant_message", text: "Background process completed" },
-    ]);
+    // [pbash/custom-notification] 自主 turn 的唤醒机制保留，条目为零。
+    expect(events.timelineItems()).toEqual([]);
     expect(events.turnLifecycleEvents()).toEqual([{ type: "turn_started", turnId: undefined }]);
 
     fakeSession.settleTurn();
