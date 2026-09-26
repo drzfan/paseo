@@ -221,10 +221,20 @@ export interface AgentSteerOptions extends AgentRunOptions {
   clearPendingPermissions?: boolean;
 }
 
-export type SteerResult = { status: "accepted" } | { status: "unavailable" };
+export type SteerResult =
+  | { status: "accepted" }
+  | { status: "unavailable" }
+  | { status: "no-turn" };
 
 export interface SteerActiveTurnOptions extends AgentSteerOptions {
-  expectedTurnId: string;
+  /**
+   * Manager-side view of the turn to steer. Advisory admission context only:
+   * providers treat their own ledger as the single admission token (P9-A), so a
+   * mismatch reports "no-turn" (stale manager ledger, dispatch as a normal
+   * prompt) rather than "unavailable" (genuinely unsteerable, replace
+   * fallback). Omitting it steers whatever turn the provider itself admits.
+   */
+  expectedTurnId?: string;
 }
 
 export interface AgentUsage {

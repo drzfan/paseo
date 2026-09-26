@@ -2747,6 +2747,21 @@ export class AgentManager {
     if (result.status === "accepted") {
       return { status: "steered" };
     }
+    // [P9-A] The provider's own ledger is the admission authority: "no-turn"
+    // means the expectedTurnId we computed was stale (ledger drift), never that
+    // steering is impossible. Map it to a clean inactive dispatch — but only
+    // once our ledger has converged off the stale token too (the admission
+    // finally-block drains events before we get here). While the ledger still
+    // claims a turn, an inactive return would let the caller's replaceRunning
+    // dispatch interrupt the session and clear the provider's queues, so refuse
+    // instead — same contract as the unavailable guard below: never act on a
+    // turn we can no longer account for.
+    if (result.status === "no-turn") {
+      if (agent.activeForegroundTurnId === null && agent.activeTurnId === null) {
+        return { status: "inactive" };
+      }
+      throw new Error("Active turn changed before steering could be delivered");
+    }
 
     // Providers without autonomous steering keep their existing dispatch behavior. The shared
     // admission may recognize the turn, but only an accepted steer can own it without replacement.

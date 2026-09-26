@@ -2157,21 +2157,65 @@ describe("PiRpcAgentSession steering", () => {
     ]);
   });
 
-  test("reports unavailable when the expected turn is not the active one", async () => {
+  test("reports no-turn when the expected turn is not the active one", async () => {
     const { pi, session } = await createSession();
     const fakeSession = pi.latestSession();
     const { turnId } = await session.startTurn("run");
 
+    // [P9-A] A mismatch is manager-ledger drift, not an unsteerable session:
+    // surface "no-turn" so dispatch never falls back to interrupt-and-replace.
     const stale = await session.steerActiveTurn("steer", {
       expectedTurnId: "turn-that-ended",
     });
-    expect(stale).toEqual({ status: "unavailable" });
+    expect(stale).toEqual({ status: "no-turn" });
 
     fakeSession.finishTurn();
     await flushTurnScheduling();
     const idle = await session.steerActiveTurn("steer", { expectedTurnId: turnId });
-    expect(idle).toEqual({ status: "unavailable" });
+    expect(idle).toEqual({ status: "no-turn" });
     expect(fakeSession.steerCalls).toEqual([]);
+  });
+
+  test("steers the provider's own active turn without an expectedTurnId", async () => {
+    const { pi, session } = await createSession();
+    const fakeSession = pi.latestSession();
+    await session.startTurn("run");
+
+    const result = await session.steerActiveTurn("steer", {
+      clientMessageId: "client-steer-1",
+    });
+
+    expect(result).toEqual({ status: "accepted" });
+    expect(fakeSession.steerCalls).toEqual([{ message: "steer", imageCount: 0 }]);
+  });
+
+  test("reports no-turn when idle without an expectedTurnId", async () => {
+    const { pi, session } = await createSession();
+    const fakeSession = pi.latestSession();
+    await session.startTurn("run");
+    fakeSession.finishTurn();
+    await flushTurnScheduling();
+
+    const result = await session.steerActiveTurn("steer", {});
+
+    expect(result).toEqual({ status: "no-turn" });
+    expect(fakeSession.steerCalls).toEqual([]);
+  });
+
+  test("keeps reporting unavailable when the steered turn ends mid-steer", async () => {
+    const { pi, session } = await createSession();
+    const fakeSession = pi.latestSession();
+    const { turnId } = await session.startTurn("run");
+    const originalSteer = fakeSession.steer.bind(fakeSession);
+    fakeSession.steer = async (message, images) => {
+      await originalSteer(message, images);
+      fakeSession.finishTurn();
+      await flushTurnScheduling();
+    };
+
+    const result = await session.steerActiveTurn("steer", { expectedTurnId: turnId });
+
+    expect(result).toEqual({ status: "unavailable" });
   });
 
   test("keeps slash-command steers on the interrupt fallback", async () => {
