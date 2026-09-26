@@ -211,3 +211,35 @@ describe("MailboxService", () => {
     expect(delivered).toHaveLength(20);
   });
 });
+
+describe("MailboxService hasEverSubscribed（P7-M2/M3 自门控旗语）", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "paseo-mailbox-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("从未订阅 → false；订阅过 → true（订阅者解绑后仍 true）", async () => {
+    const service = new MailboxService(root, logger);
+    expect(service.hasEverSubscribed("agent-x")).toBe(false);
+
+    const subscriber = recordingSubscriber();
+    await service.subscribe("agent-x", subscriber);
+    expect(service.hasEverSubscribed("agent-x")).toBe(true);
+
+    // 解绑（断连）后旗语仍在：本 daemon 轮内该 agent 是 pi+旗标开，
+    // 信箱路径继续有效（离线积压语义）
+    service.unsubscribe("agent-x", subscriber);
+    expect(service.hasEverSubscribed("agent-x")).toBe(true);
+  });
+
+  test("旗语是 daemon 内存态：push 不点亮，只有 subscribe 点亮", async () => {
+    const service = new MailboxService(root, logger);
+    await service.push("agent-y", "w", "信");
+    expect(service.hasEverSubscribed("agent-y")).toBe(false);
+  });
+});
