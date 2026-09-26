@@ -5188,6 +5188,9 @@ export class AgentManager {
         ...env,
         PASEO_AGENT_ID: agentId,
         PASEO_AGENT_CWD: cwd,
+        // P8-T7：让 pbash 扩展创建终端时带上正确 workspace（终端归属修复）。
+        // 契约：env 存在 ⟺ workspace 已知；缺席时扩展走 legacy，不注入空串。
+        ...(opening?.workspaceId ? { PASEO_WORKSPACE_ID: opening.workspaceId } : {}),
       },
     };
     if (
