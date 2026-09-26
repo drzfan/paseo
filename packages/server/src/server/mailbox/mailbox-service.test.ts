@@ -189,9 +189,11 @@ describe("MailboxService", () => {
 
     const result = await service.push("agent-a", "w", "离线信");
     expect(result.queued).toBe(true);
-    expect(s1.batches.every((batch) => !batch.items.some((item) => item.text === "离线信"))).toBe(
-      true,
-    );
+    // 摊平嵌套回调（P7-M2 遗留的 max-nested-callbacks 超限；describe+test 已占两级，
+    // 体内只容一级）：两趟单级遍历打平再断言
+    const deliveredItems = s1.batches.flatMap((batch) => batch.items);
+    const deliveredTexts = deliveredItems.map((item) => item.text);
+    expect(deliveredTexts).not.toContain("离线信");
 
     const s2 = recordingSubscriber();
     await service.subscribe("agent-a", s2);
