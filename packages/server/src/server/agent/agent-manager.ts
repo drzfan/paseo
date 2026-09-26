@@ -2760,6 +2760,31 @@ export class AgentManager {
       if (agent.activeForegroundTurnId === null && agent.activeTurnId === null) {
         return { status: "inactive" };
       }
+      // [P9-A2] 收敛窗重试：账本未收敛但 provider 明确说「有 turn 却不是我们
+      // 预期的那个」——典型为 turn 边界竞态（旧 token 过期、新 turn 已起）。
+      // 重读 post-drain 新鲜 token 重试一次（准入断言用新鲜值；provider 侧不
+      // 带令牌，steer 它自己账本上的当前 turn）：steer 本身零破坏（pi 排队到
+      // 工具间隙插入，不清队列不杀 turn），成功即用户预期的「插话排队」语义。
+      // 仍 no-turn（provider 坚称无 turn）→ 信任 provider 走正常派发；
+      // unavailable（slash/老 pi）→ 落田 unavailable 分支。
+      // 修护前该窗口会 throw 弹回用户消息（实测生产事故：mid-turn 插话被拒）。
+      const freshToken = agent.activeForegroundTurnId ?? agent.activeTurnId;
+      const retry = freshToken
+        ? await this.runSteerAdmission(agent, freshToken, async () =>
+            agent.session.steerActiveTurn
+              ? agent.session.steerActiveTurn(prompt, {
+                  ...options,
+                  expectedTurnId: undefined,
+                })
+              : { status: "unavailable" as const },
+          )
+        : { status: "no-turn" as const };
+      if (retry.status === "accepted") {
+        return { status: "steered" };
+      }
+      if (retry.status === "no-turn") {
+        return { status: "inactive" };
+      }
       throw new Error("Active turn changed before steering could be delivered");
     }
 

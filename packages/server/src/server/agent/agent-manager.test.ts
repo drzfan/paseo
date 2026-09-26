@@ -596,7 +596,10 @@ class SteeringTestSession extends TestAgentSession {
     options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
   ): Promise<import("./agent-sdk-types.js").SteerResult> {
     this.steerCount += 1;
-    if (options.expectedTurnId !== `active-turn-${this.startCount}`) {
+    // [P9-A2] 对齐 provider 契约：expectedTurnId 缺席 = steer 本会话当前 turn
+    // （无令牌重试路径）；仅当携带令牌且不匹配时才拒。
+    const expected = options.expectedTurnId;
+    if (expected !== undefined && expected !== `active-turn-${this.startCount}`) {
       return { status: "unavailable" };
     }
     if (this.steerResult instanceof Error) throw this.steerResult;
@@ -955,7 +958,7 @@ test("no-turn steer returns inactive without replacing once the ledger converges
   }
 });
 
-test("no-turn steer refuses while the ledger still claims the stale token", async () => {
+test("no-turn steer retries tokenless while the ledger still claims the stale token, then trusts the provider", async () => {
   const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
   session.steerResult = "no-turn";
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-no-turn-stale-"));
@@ -982,13 +985,66 @@ test("no-turn steer refuses while the ledger still claims the stale token", asyn
     })();
     await manager.waitForAgentRunStart(agent.id);
 
-    // [P9-A] Provider says no turn but the ledger has not converged: an
-    // inactive return would let the caller's replaceRunning dispatch clear
-    // the provider's queues, so the admission refuses instead.
-    await expect(
-      manager.steerOrReplaceActiveTurn(agent.id, "hello", { clientMessageId: "hello-client" }),
-    ).rejects.toThrow("Active turn changed before steering could be delivered");
-    expect(session.steerCount).toBe(1);
+    // [P9-A2] Provider says "not that turn" while the ledger has not
+    // converged: retry once against the provider's own current turn. If the
+    // provider still insists there is no turn, trust it and dispatch cleanly —
+    // the user's interjection must never bounce (production incident:
+    // mid-turn steering rejected with "Active turn changed").
+    const result = await manager.steerOrReplaceActiveTurn(agent.id, "hello", {
+      clientMessageId: "hello-client",
+    });
+    expect(result).toEqual({ status: "inactive" });
+    expect(session.steerCount).toBe(2);
+    expect(session.interruptCount).toBe(0);
+  } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("no-turn steer retry converts a turn-boundary race into a successful steer", async () => {
+  class BoundaryRaceSession extends SteeringTestSession {
+    override async steerActiveTurn(
+      _prompt: AgentPromptInput,
+      options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
+    ): Promise<import("./agent-sdk-types.js").SteerResult> {
+      this.steerCount += 1;
+      // First admission carries the stale token → provider sees a newer turn.
+      // The tokenless retry (expectedTurnId undefined) must steer it.
+      if (options.expectedTurnId !== undefined) return { status: "no-turn" };
+      return { status: "accepted" };
+    }
+  }
+  const session = new BoundaryRaceSession({ provider: "codex", cwd: process.cwd() });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-no-turn-retry-"));
+  const manager = new AgentManager({
+    clients: {
+      codex: new (class extends TestAgentClient {
+        override async createSession(): Promise<AgentSession> {
+          return session;
+        }
+      })(),
+    },
+    logger,
+  });
+  let agentId: null | string = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    const run = manager.streamAgent(agent.id, "initial");
+    void (async () => {
+      for await (const _event of run) {
+      }
+    })();
+    await manager.waitForAgentRunStart(agent.id);
+
+    const result = await manager.steerOrReplaceActiveTurn(agent.id, "hello", {
+      clientMessageId: "hello-client",
+    });
+    expect(result).toEqual({ status: "steered" });
+    expect(session.steerCount).toBe(2);
     expect(session.interruptCount).toBe(0);
   } finally {
     if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
