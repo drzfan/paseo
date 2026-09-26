@@ -20,6 +20,10 @@ import {
 } from "./agent.js";
 import { createImportDescriptorScheduler } from "./import-descriptor-scheduler.js";
 import { claudeProjectDirSync } from "./project-dir.js";
+import {
+  checkProviderLaunchAvailable,
+  resolveProviderLaunch,
+} from "../../provider-launch-config.js";
 import { streamSession } from "../test-utils/session-stream-adapter.js";
 import type {
   ImportableProviderSession,
@@ -573,12 +577,33 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
   });
 });
 
+// 环境依赖测试：仅在本机 PATH 里有 claude 二进制时执行（CI/无 Claude Code 的
+// 机器上跳过，不再硬断言存在）
+const claudeBinaryAvailable = await (async () => {
+  try {
+    const launch = await resolveProviderLaunch({
+      commandConfig: undefined,
+      defaultBinary: "claude",
+    });
+    return (await checkProviderLaunchAvailable(launch)).available;
+  } catch {
+    return false;
+  }
+})();
+
 describe("ClaudeAgentClient binary resolution", () => {
   const logger = createTestLogger();
 
-  test("resolves the installed Claude Code version", async () => {
-    await expect(resolveClaudeCodeVersion()).resolves.toMatch(/^\d+\.\d+\.\d+$/);
-  });
+  // [rebase-011] 上游 v0.11.1 删除了 getUsageReference/UsageReference 机制（usage 子系统
+  // 重写为 AgentUsage/AgentUsageSession），原 3 条 usage-reference 断言随 API 一并弃守
+  // （弃我保上：所测接口已不存在）。保留 1514dc471 的本意——环境依赖测试无 claude
+  // 二进制时 skip，不再硬断言存在。
+  (claudeBinaryAvailable ? test : test.skip)(
+    "resolves the installed Claude Code version",
+    async () => {
+      await expect(resolveClaudeCodeVersion()).resolves.toMatch(/^\d+\.\d+\.\d+$/);
+    },
+  );
 
   test("rejects a wrapper command's own version output instead of reading it as Claude Code's", async () => {
     const wrapperDir = await fs.mkdtemp(path.join(os.tmpdir(), "paseo-claude-version-"));
