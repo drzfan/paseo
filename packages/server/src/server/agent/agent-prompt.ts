@@ -469,6 +469,26 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       permissionRequest,
     });
 
+    // [pbash/mailbox-seam] P7-M3 看门狗投递岔口——上游通知系统重写时，本缝要么
+    // trivially 重贴、要么直接采用上游新机制（届时删除本缝并在 lesson 记录）。
+    // 旗词语义（daemon 内存态，不持久化）：该 agent 会话曾订阅过信箱 = pi 扩展
+    // 在场且旗标开 → 写信箱（住户自投、followUp 唤醒、时间线零痕迹）；否则原路
+    // 注入（零行为变化，含非 pi 代理的白条保底）。mailbox 实例由 websocket-server
+    // 构造后挂到共享 agentManager（见该文件同标记处；结构类型取用，不改
+    // AgentManager 本体与调用方签名——rebase 冲突面最小）。
+    const seamMailbox = (
+      agentManager as {
+        mailbox?: {
+          hasEverSubscribed(agentId: string): boolean;
+          push(agentId: string, from: string, text: string): Promise<unknown>;
+        };
+      }
+    ).mailbox;
+    if (seamMailbox?.hasEverSubscribed(callerAgentId)) {
+      await seamMailbox.push(callerAgentId, "paseo-system", body);
+      return;
+    }
+
     await sendPromptToAgent({
       agentManager,
       agentStorage,

@@ -678,6 +678,10 @@ export class VoiceAssistantWebSocketServer {
     this.agentStorage = agentStorage;
     this.messageReceipts = new MessageReceipts(join(paseoHome, "agent-requests"));
     this.mailboxService = new MailboxService(join(paseoHome, "mailboxes"), logger);
+    // [pbash/mailbox-seam] P7-M3：信箱实例挂到共享 agentManager（结构类型挂载，
+    // 不改 AgentManager 本体）——看门狗投递岔口（agent-prompt.ts 同标记处）从
+    // 这里取用。经此一个挂载点，MCP 工具路径与 WS 创建路径的看门狗全部过缝。
+    (this.agentManager as { mailbox?: unknown }).mailbox = this.mailboxService;
     this.creationService = new CreationService(
       join(paseoHome, "creations"),
       this.logger.child({ module: "creation" }),
