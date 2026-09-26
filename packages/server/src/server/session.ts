@@ -2704,6 +2704,19 @@ export class Session {
       );
       return;
     }
+    // P7-M2 路由岔口：从未订阅过信箱的 agent（非 pi / 扩展旗标关 / 本轮 daemon
+    // 尚未拉起）——信无人读，不落盘，回 fallback:true 让写入方走原 send 通道
+    //（provider 中立白条保底）。与 M3 看门狗缝同源判断（hasEverSubscribed）。
+    if (!this.mailbox.hasEverSubscribed(msg.agentId)) {
+      this.emitForSource(
+        {
+          type: "mailbox.push.response",
+          payload: { requestId: msg.requestId, id: "", queued: false, fallback: true },
+        },
+        source,
+      );
+      return;
+    }
     const result = await this.mailbox.push(msg.agentId, msg.from, msg.text);
     this.emitForSource(
       {

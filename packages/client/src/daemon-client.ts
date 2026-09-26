@@ -5438,6 +5438,31 @@ export class DaemonClient {
     return payload.output;
   }
 
+  /**
+   * P7-M2：向 agent 信箱写一封机器消息（mailbox.push.request，通用请求通道
+   * 同 invokePluginRpc）。返回路由结果：fallback=true 表示收件人从未订阅过
+   * 信箱（非 pi / 旗标关），daemon 未写入——调用方应回退原 send 通道。
+   * 注：旧版 daemon（无 mailbox 面）会以 rpc_error 拒绝本请求，视为 fallback
+   * 由调用方自处（插件侧统一 catch 回退）。
+   */
+  async pushMail(
+    agentId: string,
+    from: string,
+    text: string,
+  ): Promise<{ id: string; queued: boolean; fallback: boolean }> {
+    const requestId = this.createRequestId();
+    const payload = await this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mailbox.push.request", requestId, agentId, from, text },
+      responseType: "mailbox.push.response",
+    });
+    return {
+      id: payload.id,
+      queued: payload.queued,
+      fallback: payload.fallback === true,
+    };
+  }
+
   async respondToPermissionAndWait(
     agentId: string,
     requestId: string,

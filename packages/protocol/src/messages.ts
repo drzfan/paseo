@@ -4782,10 +4782,15 @@ export const MailboxPushResponseMessageSchema = z.object({
   type: z.literal("mailbox.push.response"),
   payload: z.object({
     requestId: z.string(),
-    /** 已生成的信件 id（无论是否即时投递）。 */
+    /** 已生成的信件 id（fallback 路径无信件，为空串）。 */
     id: z.string(),
     /** true = 无订阅者，只积压；false = 已即时推送给订阅者。 */
     queued: z.boolean(),
+    /**
+     * P7-M2 路由岔口：true = 收件人从未订阅过信箱（非 pi / 旗标关），daemon
+     * 未写任何东西，调用方应回退原 send 通道（provider 中立白条保底）。
+     */
+    fallback: z.boolean().optional(),
   }),
 });
 

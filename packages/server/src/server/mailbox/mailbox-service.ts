@@ -68,6 +68,15 @@ export class MailboxService {
   private readonly rootDir: string;
   private readonly logger: Logger;
   private readonly agents = new Map<string, AgentMailboxState>();
+  /**
+   * P7-M2/M3 自门控旗语：本 daemon 生命周期内曾订阅过信箱的 agent。
+   * 语义 = 扩展在场且旗标开（扩展订阅即写入）→ 写信箱；从未订阅（非 pi /
+   * 旗标关 / 本轮 daemon 尚未拉起）→ 写入方回退原 send 通道（provider 中立
+   * 白条保底）。刻意不持久化：旗标关回滚后旧标记会永远指向无人读的信箱
+   * （信件丢失比白条更糟）；daemon 重启后的短暂窗口回退白条 = 与今日行为
+   * 一致的可接受降级（spec v1.2 §三-M3 自门控）。
+   */
+  private readonly everSubscribed = new Set<string>();
   private rootReady: Promise<void> | null = null;
 
   constructor(rootDir: string, logger: Logger) {
@@ -96,6 +105,7 @@ export class MailboxService {
    * 积压（推送 + 落水位线 + 旋转），此后 push 即实时推。
    */
   subscribe(agentId: string, subscriber: MailboxSubscriber): Promise<void> {
+    this.everSubscribed.add(agentId);
     this.state(agentId).subscribers.add(subscriber);
     return this.enqueue(agentId, async () => {
       const pending = await this.pendingAfterWatermark(agentId);
@@ -110,6 +120,11 @@ export class MailboxService {
   unsubscribe(agentId: string, subscriber: MailboxSubscriber): void {
     const state = this.agents.get(agentId);
     if (state) state.subscribers.delete(subscriber);
+  }
+
+  /** P7-M2/M3 自门控旗语查询（daemon 内存态；语义见字段注释）。 */
+  hasEverSubscribed(agentId: string): boolean {
+    return this.everSubscribed.has(agentId);
   }
 
   // ---------- 内部 ----------
