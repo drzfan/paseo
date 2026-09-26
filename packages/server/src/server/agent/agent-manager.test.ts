@@ -4403,6 +4403,8 @@ test("importProviderSession imports the selected session without listing and pub
     env: {
       PASEO_AGENT_ID: imported.id,
       PASEO_AGENT_CWD: workdir,
+      // [P8-T7] 导入会话同样注入 workspace 章（env 存在 ⟺ workspace 已知）
+      PASEO_WORKSPACE_ID: "ws-imported",
     },
   });
   expect(imported.lifecycle).toBe("idle");
