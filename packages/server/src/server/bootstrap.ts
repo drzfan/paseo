@@ -2,6 +2,7 @@ import {
   createFinishSubscriptions,
   createFinishObservation,
   createJsonFinishSubscriptionStore,
+  type FinishMailboxSeam,
 } from "./agent/finish-subscriptions/index.js";
 import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import type { PluginRegistries } from "@getpaseo/protocol/plugin-registry";
@@ -1421,6 +1422,9 @@ export async function createPaseoDaemon(
     store: createJsonFinishSubscriptionStore(config.paseoHome),
     serverId,
     logger,
+    // [pbash/mailbox-seam] P7-M3：信箱实例挂在共享 agentManager 上（websocket-server
+    // 构造后结构类型挂载）——单挂载点覆盖 MCP 工具路径与 WS 创建路径。
+    mailbox: () => (agentManager as { mailbox?: FinishMailboxSeam }).mailbox,
     messages: () => {
       if (!wsServer) throw new Error("Daemon is not accepting agent messages");
       return wsServer.agentMessages;

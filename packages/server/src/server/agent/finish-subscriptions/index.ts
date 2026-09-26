@@ -33,9 +33,22 @@ export interface FinishObservationSession {
 export interface FinishObservation {
   open(subscription: FinishSubscription, signal: AbortSignal): Promise<FinishObservationSession>;
 }
+/**
+ * [pbash/mailbox-seam] P7-M3 投递岔口的结构类型（内联，不引入 mailbox 模块依赖）：
+ * 订阅者曾订阅过信箱 = pi 扩展在场且旗标开 → 完成通知写信箱（住户自投、零时间线痕迹）。
+ */
+export interface FinishMailboxSeam {
+  hasEverSubscribed(agentId: string): boolean;
+  push(agentId: string, from: string, text: string): Promise<unknown>;
+}
 interface Dependencies extends FinishObservation {
   store: FinishSubscriptionStore;
   messages(): AgentMessageDelivery;
+  /**
+   * [pbash/mailbox-seam] 信箱实例取用点（生产实现在共享 agentManager 上，结构类型挂载）。
+   * 缺省/返回 undefined = 原路投递，零行为变化（非 pi / 旗标关 / 未挂载）。
+   */
+  mailbox?: () => FinishMailboxSeam | undefined;
   callerIsActive(agentId: string): Promise<boolean>;
   serverId: string;
   logger: Logger;
@@ -178,16 +191,30 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
       if (signal.aborted) return false;
       if (request && permissions.has(request.id)) continue;
       const title = result.final?.title ?? record.childAgentId;
+      const body = formatFinishNotificationBody({
+        childAgentId: record.childAgentId,
+        serverId: record.serverId ?? deps.serverId,
+        title,
+        reason,
+        lastAssistantMessage: result.lastMessage,
+        permissionRequest: request,
+      });
+      // [pbash/mailbox-seam] P7-M3 看门狗投递岔口（0.13 版落点）：上游把完成通知
+      // 从 agent-prompt.setupFinishNotification 迁到 finish-subscriptions，本缝随
+      // 之迁到同一个“投递出口”。曾订阅信箱 → 写信箱（from:paseo-system，零时间线
+      // 痕迹）；否则走上游 enqueue 原路（白条保底，零行为变化）。
+      const seamMailbox = deps.mailbox?.();
+      if (seamMailbox?.hasEverSubscribed(record.callerAgentId)) {
+        await abortable(
+          seamMailbox.push(record.callerAgentId, "paseo-system", body),
+          signal,
+        );
+        if (request) permissions.add(request.id);
+        continue;
+      }
       const receipt = deps.messages().enqueue({
         recipientId: record.callerAgentId,
-        prompt: formatFinishNotificationBody({
-          childAgentId: record.childAgentId,
-          serverId: record.serverId ?? deps.serverId,
-          title,
-          reason,
-          lastAssistantMessage: result.lastMessage,
-          permissionRequest: request,
-        }),
+        prompt: body,
         source: {
           kind: "agent-notification",
           agentId: record.childAgentId,
