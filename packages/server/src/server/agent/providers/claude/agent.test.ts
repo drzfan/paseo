@@ -16,6 +16,10 @@ import {
   toClaudeSdkMcpConfig,
 } from "./agent.js";
 import { claudeProjectDirSync } from "./project-dir.js";
+import {
+  checkProviderLaunchAvailable,
+  resolveProviderLaunch,
+} from "../../provider-launch-config.js";
 import { streamSession } from "../test-utils/session-stream-adapter.js";
 import type {
   AgentPromptInput,
@@ -524,12 +528,29 @@ describe("ClaudeAgentClient.fetchCatalog", () => {
   });
 });
 
+// 环境依赖测试：仅在本机 PATH 里有 claude 二进制时执行（CI/无 Claude Code 的
+// 机器上跳过，不再硬断言存在）
+const claudeBinaryAvailable = await (async () => {
+  try {
+    const launch = await resolveProviderLaunch({
+      commandConfig: undefined,
+      defaultBinary: "claude",
+    });
+    return (await checkProviderLaunchAvailable(launch)).available;
+  } catch {
+    return false;
+  }
+})();
+
 describe("ClaudeAgentClient binary resolution", () => {
   const logger = createTestLogger();
 
-  test("resolves the installed Claude Code version", async () => {
-    await expect(resolveClaudeCodeVersion()).resolves.toMatch(/^\d+\.\d+\.\d+$/);
-  });
+  (claudeBinaryAvailable ? test : test.skip)(
+    "resolves the installed Claude Code version",
+    async () => {
+      await expect(resolveClaudeCodeVersion()).resolves.toMatch(/^\d+\.\d+\.\d+$/);
+    },
+  );
 
   test("loads user, project, and local Claude settings", async () => {
     const queryReturn = vi.fn();
