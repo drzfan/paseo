@@ -1366,12 +1366,27 @@ export class PiRpcAgentSession implements AgentSession {
     prompt: AgentPromptInput,
     options: SteerActiveTurnOptions,
   ): Promise<SteerResult> {
-    if (this.closed || this.activeTurnId !== options.expectedTurnId) {
+    if (this.closed) {
       return { status: "unavailable" };
     }
-    const payload = await convertPromptInput(prompt, { model: this.state.model });
-    if (this.closed || this.activeTurnId !== options.expectedTurnId)
+    // [P9-A] Single-token admission: this provider's own ledger is the only
+    // authority on whether pi has an active turn. A mismatched expectedTurnId
+    // means the manager's ledger is stale — NOT that pi cannot steer — so
+    // report "no-turn" and let the manager dispatch a normal prompt instead of
+    // interrupt-and-replacing (which would clear pi's queues). "unavailable"
+    // stays reserved for genuinely unsteerable sessions below. Without an
+    // expectedTurnId we steer whatever turn our own ledger admits.
+    if (this.closed) {
       return { status: "unavailable" };
+    }
+    const admittedTurnId = this.activeTurnId;
+    if (
+      admittedTurnId === null ||
+      (options.expectedTurnId !== undefined && admittedTurnId !== options.expectedTurnId)
+    ) {
+      return { status: "no-turn" };
+    }
+    const payload = await convertPromptInput(prompt, { model: this.state.model });
     // Pi rejects steer RPCs that are extension commands, so slash inputs keep the
     // interrupt-and-replace fallback where they can run directly.
     if (this.parseSlashCommandInput(payload.text)) {
@@ -1388,7 +1403,7 @@ export class PiRpcAgentSession implements AgentSession {
     }
     // The steer is already queued inside pi; if the turn moved on meanwhile its fate
     // is ambiguous, so surface it instead of replacing the wrong turn.
-    if (this.closed || this.activeTurnId !== options.expectedTurnId) {
+    if (this.closed || this.activeTurnId !== admittedTurnId) {
       return { status: "unavailable" };
     }
     this.pendingSteerSubmissions.push({

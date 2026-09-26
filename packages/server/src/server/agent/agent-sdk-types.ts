@@ -210,12 +210,21 @@ export interface AgentSteerOptions extends AgentRunOptions {
 
 // providerMessageId names the steered message in the provider's own history, when the provider
 // mints one. Rewinding to the message needs it.
+// [P9-A] "no-turn": the provider ledger's own view — manager should dispatch a normal prompt.
 export type SteerResult =
   | { status: "accepted"; providerMessageId?: string }
-  | { status: "unavailable" };
+  | { status: "unavailable" }
+  | { status: "no-turn" };
 
 export interface SteerActiveTurnOptions extends AgentSteerOptions {
-  expectedTurnId: string;
+  /**
+   * Manager-side view of the turn to steer. Advisory admission context only:
+   * providers treat their own ledger as the single admission token (P9-A), so a
+   * mismatch reports "no-turn" (stale manager ledger, dispatch as a normal
+   * prompt) rather than "unavailable" (genuinely unsteerable, replace
+   * fallback). Omitting it steers whatever turn the provider itself admits.
+   */
+  expectedTurnId?: string;
 }
 
 export interface AgentUsage {
