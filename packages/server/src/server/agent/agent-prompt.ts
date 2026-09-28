@@ -403,7 +403,7 @@ function formatFinishHousekeepingHint(childAgentId: string): string {
     "<housekeeping>",
     "This child's agent process stays resident until archived. If it has no further work for you, reclaim it:",
     `paseo_archive_agent(agentId="${childAgentId}")`,
-    "(history stays on disk — recoverable via paseo_list_agents with includeArchived; follow-up prompts to an archived agent are not delivered)",
+    "(history stays on disk — recoverable via paseo_list_agents with includeArchived; a follow-up prompt still wakes the archived agent with full context — archive only reclaims the resident process)",
     "To review what it did recently:",
     `paseo_get_agent_activity(agentId="${childAgentId}", limit=10)`,
     "</housekeeping>",
