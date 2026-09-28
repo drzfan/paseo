@@ -910,6 +910,25 @@ describe("PiRpcAgentSession", () => {
     expect(events.eventTypes().slice(0, 2)).toEqual(["turn_started", "timeline"]);
   });
 
+  test("capture bridge stays silent for system envelope machine payloads [pbash/custom-notification]", async () => {
+    // 2026-09-28 灰气泡案：插件经 send_agent_message 注入的空闲投递走捕获桥入册，
+    // 绕开 streamHistory 四关卡。同款信封正则在此补守卫，直播/历史两路对齐。
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    const envelopeText = "<paseo-system>\n[paseo-system] Agent 小工 finished. 耗时 5s\n</paseo-system>";
+    await session.startTurn(envelopeText);
+    fakeSession.emit({ type: "turn_start" });
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-env-1",
+      parentId: null,
+      text: envelopeText,
+    });
+
+    // 信封机器载荷零条目（人类视图由卡片承担）
+    expect(events.timelineItems()).toEqual([]);
+  });
+
   test("uses the Pi entry attached to a submitted prompt after resuming old history", async () => {
     const pi = new FakePi();
     const client = createClient(pi);

@@ -42,6 +42,7 @@ import {
   type ToolCallDetail,
 } from "../../agent-sdk-types.js";
 import { importSessionFromPersistence } from "../../provider-session-import.js";
+import { isSystemInjectedEnvelope } from "../../agent-prompt.js";
 import { runProviderRefreshActivity } from "../../provider-refresh-deadline.js";
 import { runProviderTurn } from "../provider-runner.js";
 import {
@@ -1990,6 +1991,12 @@ export class PiRpcAgentSession implements AgentSession {
     }
     const [entry] = parseCapturedEntries([payload.entry]);
     if (!entry) {
+      return true;
+    }
+    // [pbash/custom-notification] 信封机器载荷在捕获桥也须哑火（2026-09-28 灰气泡案：
+    // 插件经 send_agent_message 注入的空闲投递走本通道入册，绕开了 streamHistory
+    // 四关卡——同款正则在此补守卫，直播/历史两路对齐）。
+    if (isSystemInjectedEnvelope(entry.text)) {
       return true;
     }
     const pendingSteer = this.takePendingSteerSubmission(entry.text);
