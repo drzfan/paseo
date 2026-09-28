@@ -392,6 +392,24 @@ interface FinishNotificationBodyInput {
   permissionRequest?: AgentPermissionRequest;
 }
 
+/**
+ * Terminal (non-permission) finish notifications end with a housekeeping
+ * footer so the receiving agent can act without remembering tool names:
+ * archive the finished child to reclaim its resident agent process, or
+ * review its recent activity first. The child's agentId is embedded verbatim.
+ */
+function formatFinishHousekeepingHint(childAgentId: string): string {
+  return [
+    "<housekeeping>",
+    "This child's agent process stays resident until archived. If it has no further work for you, reclaim it:",
+    `paseo_archive_agent(agentId="${childAgentId}")`,
+    "(history stays on disk — recoverable via paseo_list_agents with includeArchived; follow-up prompts to an archived agent are not delivered)",
+    "To review what it did recently:",
+    `paseo_get_agent_activity(agentId="${childAgentId}", limit=10)`,
+    "</housekeeping>",
+  ].join("\n");
+}
+
 function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
   const statusLine = `Agent ${params.childAgentId} (${params.title}) ${params.reason}.`;
   const sections = [statusLine];
@@ -416,6 +434,11 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
       lastAssistantMessage = `${lastAssistantMessage.slice(0, FINISH_NOTIFICATION_MESSAGE_LIMIT)}\n[truncated ${omitted} chars; use get_agent_activity for the full response]`;
     }
     sections.push(`<agent-response>\n${lastAssistantMessage}\n</agent-response>`);
+  }
+  // 终态回执脚注：善后指引（归档回收常驻进程/复核活动，ID 嵌死、免查手册）。
+  // 「needs permission」不算终态，不带脚注。
+  if (params.reason !== "needs permission") {
+    sections.push(formatFinishHousekeepingHint(params.childAgentId));
   }
   return sections.join("\n\n");
 }
