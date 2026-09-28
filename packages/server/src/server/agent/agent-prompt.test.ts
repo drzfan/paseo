@@ -264,6 +264,18 @@ test("isSystemInjectedEnvelope matches the envelope formatSystemNotificationProm
   expect(isSystemInjectedEnvelope("hello world")).toBe(false);
 });
 
+// 终态回执脚注（与源码 formatFinishHousekeepingHint 保持同构，锁契约用）
+const finishHousekeeping = (agentId: string): string =>
+  [
+    "<housekeeping>",
+    "This child's agent process stays resident until archived. If it has no further work for you, reclaim it:",
+    `paseo_archive_agent(agentId="${agentId}")`,
+    "(history stays on disk — recoverable via paseo_list_agents with includeArchived; follow-up prompts to an archived agent are not delivered)",
+    "To review what it did recently:",
+    `paseo_get_agent_activity(agentId="${agentId}", limit=10)`,
+    "</housekeeping>",
+  ].join("\n");
+
 test("finish notifications tell the parent the child's last assistant message", async () => {
   const scenario = createFinishNotificationScenario({
     childLastAssistantMessage: "Implemented the cleanup and all checks pass.",
@@ -274,7 +286,8 @@ test("finish notifications tell the parent the child's last assistant message", 
 
   expect(parentPrompt).toEqual(
     formatSystemNotificationPrompt(
-      "Agent child-agent (Child Agent) finished.\n\n<agent-response>\nImplemented the cleanup and all checks pass.\n</agent-response>",
+      "Agent child-agent (Child Agent) finished.\n\n<agent-response>\nImplemented the cleanup and all checks pass.\n</agent-response>\n\n" +
+        finishHousekeeping("child-agent"),
     ),
   );
   expect(scenario.steerAttemptCount()).toBe(1);
@@ -304,7 +317,9 @@ test("closing a watched child notifies the caller", async () => {
   const parentPrompt = await scenario.closeChildAndReadParentPrompt();
 
   expect(parentPrompt).toEqual(
-    formatSystemNotificationPrompt("Agent child-agent (Child Agent) was closed."),
+    formatSystemNotificationPrompt(
+      "Agent child-agent (Child Agent) was closed.\n\n" + finishHousekeeping("child-agent"),
+    ),
   );
 });
 
