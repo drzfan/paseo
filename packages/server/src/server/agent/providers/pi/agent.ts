@@ -1182,6 +1182,12 @@ export class PiRpcAgentSession implements AgentSession {
   private activeTurnId: string | null = null;
   private activeClientMessageId: string | null = null;
   private activeAssistantMessageId: string | null = null;
+  /**
+   * Last dispatched model reported back to the manager. Pi only reveals the physical
+   * provider/model on assistant messages, so the runtime keeps this to avoid re-emitting
+   * the same model_changed on every message of a turn.
+   */
+  private emittedRuntimeModelId: string | null = null;
   private activeTurnStarted = false;
   private activeTurnStartedEmitted = false;
   private pendingSettledMessages: PiAgentMessage[] | null = null;
@@ -2370,6 +2376,7 @@ export class PiRpcAgentSession implements AgentSession {
   ): void {
     if (event.message.role === "assistant") {
       this.activeAssistantMessageId = null;
+      this.emitDispatchedModel(event.message);
       return;
     }
     if (event.message.role === "custom") {
@@ -2389,6 +2396,34 @@ export class PiRpcAgentSession implements AgentSession {
       }
       return;
     }
+  }
+
+  /**
+   * Pi resolves the profile/model the caller asked for into a physical provider at turn
+   * time, and only reports it on the assistant message. Forward it as a model_changed
+   * event so the registry can display the model that was actually dispatched instead of
+   * the configured (possibly virtual) name.
+   */
+  private emitDispatchedModel(message: Extract<PiAgentMessage, { role: "assistant" }>): void {
+    const provider = typeof message.provider === "string" ? message.provider.trim() : "";
+    const modelId = typeof message.model === "string" ? message.model.trim() : "";
+    if (!provider || !modelId) {
+      return;
+    }
+    const resolvedModel = `${provider}/${modelId}`;
+    if (this.emittedRuntimeModelId === resolvedModel) {
+      return;
+    }
+    this.emittedRuntimeModelId = resolvedModel;
+    this.emit({
+      type: "model_changed",
+      provider: this.provider,
+      runtimeInfo: {
+        provider: this.provider,
+        sessionId: this.state.sessionId,
+        model: resolvedModel,
+      },
+    });
   }
 
   private emitToolCallEvent(

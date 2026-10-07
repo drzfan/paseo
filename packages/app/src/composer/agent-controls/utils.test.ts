@@ -181,9 +181,72 @@ describe("resolveAgentModelSelection", () => {
       explicitThinkingOptionId: null,
     });
 
-    expect(selection.activeModelId).toBe("default");
-    expect(selection.displayModel).toBe("Default (Sonnet 4.6)");
+    expect(selection.activeModelId).toBe("claude-sonnet-4-6-20260101");
+    // 20D: a dispatched model the catalog cannot explain is shown raw instead of
+    // being silently rendered as the provider default.
+    expect(selection.displayModel).toBe("claude-sonnet-4-6-20260101");
     expect(selection.selectedThinkingId).toBe("low");
     expect(selection.displayThinking).toBe("Low");
+  });
+
+  it("shows the dispatched model name as-is when the provider is unknown to the catalog", () => {
+    const selection = resolveAgentModelSelection({
+      models: [
+        {
+          id: "default",
+          provider: "claude",
+          label: "Default (Sonnet 4.6)",
+          isDefault: true,
+          thinkingOptions: [{ id: "low", label: "Low" }],
+        },
+      ],
+      runtimeModelId: null,
+      configuredModelId: "paseo-profile/worker",
+      displayModelId: "zai/glm-4.6",
+      explicitThinkingOptionId: null,
+    });
+
+    expect(selection.displayModel).toBe("zai/glm-4.6");
+  });
+
+  it("falls back to the raw configured model when nothing was dispatched", () => {
+    const selection = resolveAgentModelSelection({
+      models: [
+        {
+          id: "default",
+          provider: "claude",
+          label: "Default (Sonnet 4.6)",
+          isDefault: true,
+          thinkingOptions: [{ id: "low", label: "Low" }],
+        },
+      ],
+      runtimeModelId: null,
+      configuredModelId: "paseo-profile/worker",
+      displayModelId: null,
+      explicitThinkingOptionId: null,
+    });
+
+    expect(selection.displayModel).toBe("paseo-profile/worker");
+  });
+
+  it("uses the catalog label when the dispatched model is known to the catalog", () => {
+    const selection = resolveAgentModelSelection({
+      models: [
+        {
+          id: "zai/glm-4.6",
+          provider: "pi",
+          label: "GLM 4.6",
+          isDefault: true,
+          thinkingOptions: [{ id: "low", label: "Low" }],
+        },
+      ],
+      runtimeModelId: null,
+      configuredModelId: "paseo-profile/worker",
+      displayModelId: "zai/glm-4.6",
+      explicitThinkingOptionId: null,
+    });
+
+    expect(selection.activeModelId).toBe("zai/glm-4.6");
+    expect(selection.displayModel).toBe("GLM 4.6");
   });
 });

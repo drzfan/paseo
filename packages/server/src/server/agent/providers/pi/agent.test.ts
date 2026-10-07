@@ -397,6 +397,10 @@ class SessionEvents {
     return this.events.map((event) => event.type);
   }
 
+  allEvents(): readonly AgentStreamEvent[] {
+    return this.events;
+  }
+
   turnLifecycleEvents() {
     return this.events.flatMap((event) => {
       if (
@@ -1061,7 +1065,8 @@ describe("PiRpcAgentSession", () => {
     const { pi, session, events } = await createSession();
     const fakeSession = pi.latestSession();
 
-    const envelopeText = "<paseo-system>\n[paseo-system] Agent 小工 finished. 耗时 5s\n</paseo-system>";
+    const envelopeText =
+      "<paseo-system>\n[paseo-system] Agent 小工 finished. 耗时 5s\n</paseo-system>";
     await session.startTurn(envelopeText);
     fakeSession.emit({ type: "turn_start" });
     fakeSession.finishSubmittedUserMessage({
@@ -1162,6 +1167,81 @@ describe("PiRpcAgentSession", () => {
       { type: "turn_started", turnId: undefined },
       { type: "turn_completed", turnId: undefined },
     ]);
+  });
+
+  test("surfaces the dispatched provider/model as a model_changed event after the first turn", async () => {
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        provider: "zai",
+        model: "glm-4.6",
+        stopReason: "stop",
+        content: [{ type: "text", text: "done" }],
+      },
+    });
+
+    const modelChanges = events
+      .allEvents()
+      .filter((event) => event.type === "model_changed")
+      .map(
+        (event) =>
+          (event as Extract<AgentStreamEvent, { type: "model_changed" }>).runtimeInfo.model,
+      );
+
+    expect(modelChanges).toEqual(["zai/glm-4.6"]);
+  });
+
+  test("keeps reporting the dispatched model when a fallback moves to another model", async () => {
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    for (const [provider, model] of [
+      ["zai", "glm-4.6"],
+      ["anthropic", "claude-fable-5"],
+    ] as const) {
+      fakeSession.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          provider,
+          model,
+          stopReason: "stop",
+          content: [{ type: "text", text: "done" }],
+        },
+      });
+    }
+
+    const modelChanges = events
+      .allEvents()
+      .filter((event) => event.type === "model_changed")
+      .map(
+        (event) =>
+          (event as Extract<AgentStreamEvent, { type: "model_changed" }>).runtimeInfo.model,
+      );
+
+    expect(modelChanges).toEqual(["zai/glm-4.6", "anthropic/claude-fable-5"]);
+  });
+
+  test("does not report a model when the assistant message omits provider/model", async () => {
+    const { pi, events } = await createSession();
+    const fakeSession = pi.latestSession();
+
+    fakeSession.emit({ type: "agent_start" });
+    fakeSession.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "done" }],
+      },
+    });
+
+    expect(events.allEvents().filter((event) => event.type === "model_changed")).toEqual([]);
   });
 
   test("canceling a silent Pi extension command leaves the session usable", async () => {
