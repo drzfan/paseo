@@ -61,6 +61,15 @@ import type {
 
 const REQUEST_TIMEOUT_MS = 10000;
 
+// A dead worker leaves every terminal it owned pointing at a process that no
+// longer exists: reads return empty snapshots, subscriptions stay silent, and
+// clients cannot tell a ghost from a quiet terminal. The manager therefore purges
+// the worker's records and forks a replacement so new terminals still work.
+const WORKER_RESTART_BASE_DELAY_MS = 50;
+const WORKER_RESTART_MAX_DELAY_MS = 1_000;
+const WORKER_RESTART_WINDOW_MS = 60_000;
+const WORKER_RESTART_MAX_PER_WINDOW = 5;
+
 type RequiredWorkerTerminalInfo = WorkerTerminalInfo & { workspaceId: string };
 
 function requiredWorkspaceId(workspaceId: string | undefined): string {
