@@ -8311,7 +8311,7 @@ export class Session {
             ? { kind: "agent-message", agentId: msg.sourceAgentId }
             : undefined,
           messageId: msg.messageId,
-          activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
+          activeTurnBehavior: msg.activeTurnBehavior ?? "steer",
           clearPendingPermissions: true,
           logger: this.sessionLogger,
         });
@@ -8330,7 +8330,7 @@ export class Session {
           request: {
             prompt,
             sourceAgentId: msg.sourceAgentId,
-            activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
+            activeTurnBehavior: msg.activeTurnBehavior ?? "steer",
           },
           prepare: async () => {
             if (!msg.sourceAgentId) await this.prepareAgentMessage(agentId, msg.text);
