@@ -8374,7 +8374,7 @@ export class Session {
           agentId,
           prompt,
           messageId: msg.messageId,
-          activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
+          activeTurnBehavior: msg.activeTurnBehavior ?? "steer",
           sessionMode: msg.sessionMode,
           clearPendingPermissions: true,
           logger: this.sessionLogger,
@@ -8396,8 +8396,10 @@ export class Session {
               sourceAgentId: msg.sourceAgentId,
               sourceAgentServerId: msg.sourceAgentServerId,
               sessionMode: msg.sessionMode,
-              activeTurnBehavior:
-                msg.activeTurnBehavior ?? (msg.sourceAgentId ? "steer" : "interrupt"),
+              // [P9] 本地补丁 c9200adc2：用户消息缺省投递 = steer（App 未带
+              // activeTurnBehavior 时不再杀 turn）。上游 0.13 仅对 agent 消息
+              // 默认 steer，用户消息仍 interrupt——本行为本地保留。
+              activeTurnBehavior: msg.activeTurnBehavior ?? "steer",
             },
             prepare: async () => {
               if (!msg.sourceAgentId) await this.prepareAgentMessage(agentId, msg.text);
