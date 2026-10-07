@@ -81,8 +81,16 @@ function resolvePreferredModelId(
   runtimeSelectedModel: AgentModelDefinition | null,
   normalizedConfiguredModelId: string | null,
   normalizedRuntimeModelId: string | null,
+  normalizedDisplayModelId: string | null,
 ): string | null {
-  return runtimeSelectedModel?.id ?? normalizedConfiguredModelId ?? normalizedRuntimeModelId;
+  // The dispatched model wins over the configured name: a profile can resolve to a
+  // physical model the configured string never mentions.
+  return (
+    runtimeSelectedModel?.id ??
+    normalizedDisplayModelId ??
+    normalizedRuntimeModelId ??
+    normalizedConfiguredModelId
+  );
 }
 
 function pickSelectedModel(
@@ -127,13 +135,20 @@ function resolveEffectiveThinking(
 function resolveModelDisplay(
   selectedModel: AgentModelDefinition | null,
   preferredModelId: string | null,
+  preferredModelMatched: boolean,
   fallbackModel: AgentModelDefinition | null,
   unknownModelLabel: string,
 ): { activeModelId: string | null; displayModel: string } {
+  // A model id the catalog cannot explain stays raw on screen: falling back to the
+  // provider default would display a model the agent is not running.
+  const preferredDisplay = preferredModelMatched
+    ? (selectedModel?.label ?? preferredModelId)
+    : preferredModelId;
   return {
-    activeModelId: selectedModel?.id ?? preferredModelId ?? null,
-    displayModel:
-      selectedModel?.label ?? preferredModelId ?? fallbackModel?.label ?? unknownModelLabel,
+    activeModelId: preferredModelMatched
+      ? (selectedModel?.id ?? preferredModelId)
+      : (preferredModelId ?? null),
+    displayModel: preferredDisplay ?? fallbackModel?.label ?? unknownModelLabel,
   };
 }
 
@@ -158,6 +173,7 @@ export function resolveAgentModelSelection(input: {
   runtimeModelId: string | null | undefined;
   configuredModelId: string | null | undefined;
   runtimeThinkingOptionId: string | null | undefined;
+  displayModelId?: string | null;
   explicitThinkingOptionId: string | null | undefined;
 }) {
   const {
@@ -169,12 +185,14 @@ export function resolveAgentModelSelection(input: {
   } = input;
   const normalizedRuntimeModelId = normalizeModelId(runtimeModelId);
   const normalizedConfiguredModelId = normalizeModelId(configuredModelId);
+  const normalizedDisplayModelId = normalizeModelId(input.displayModelId);
 
   const runtimeSelectedModel = findModelById(models, normalizedRuntimeModelId);
   const preferredModelId = resolvePreferredModelId(
     runtimeSelectedModel,
     normalizedConfiguredModelId,
     normalizedRuntimeModelId,
+    normalizedDisplayModelId,
   );
   const fallbackModel = getFallbackModel(models);
   const selectedModel = pickSelectedModel(models, preferredModelId, fallbackModel);
@@ -182,6 +200,7 @@ export function resolveAgentModelSelection(input: {
   const { activeModelId, displayModel } = resolveModelDisplay(
     selectedModel,
     preferredModelId,
+    findModelById(models, preferredModelId) !== null,
     fallbackModel,
     i18n.t("agentControls.model.unknown"),
   );
