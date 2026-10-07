@@ -64,6 +64,9 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
     cwd: agent.cwd,
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
     model: agent.model,
+    ...(agent.displayModel !== undefined && agent.displayModel !== null
+      ? { displayModel: agent.displayModel }
+      : {}),
     ...(agent.features ? { features: agent.features } : {}),
     thinkingOptionId: agent.thinkingOptionId ?? null,
     createdAt: agent.createdAt.toISOString(),
@@ -126,6 +129,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     cwd: snapshot.cwd,
     workspaceId: snapshot.workspaceId,
     model: snapshot.model ?? null,
+    displayModel: snapshot.displayModel ?? null,
     features: snapshot.features,
     thinkingOptionId: snapshot.thinkingOptionId ?? null,
     requiresAttention: snapshot.requiresAttention ?? false,
