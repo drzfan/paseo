@@ -61,7 +61,12 @@ import {
   resolveStoredAgentUpdatedAt,
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
-import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import {
+  AGENT_LOAD_FAILURE_CACHE_TTL_MS,
+  ensureAgentLoaded,
+  ensureUnarchivedAgentLoaded,
+  isCachedAgentLoadFailure,
+} from "./agent/agent-loading.js";
 import {
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
@@ -7887,6 +7892,10 @@ export class Session {
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         logger: this.sessionLogger,
+        // Timeline fetches are polled (the app re-requests on a timer). A dead or
+        // archived agent fails every respawn, so cache the failure briefly and stop
+        // hammering the provider binary — the first failure is still logged loudly.
+        failureCacheTtlMs: AGENT_LOAD_FAILURE_CACHE_TTL_MS,
       });
       const agentPayload = await this.buildAgentPayload(snapshot);
 
@@ -7960,7 +7969,11 @@ export class Session {
         source,
       );
     } catch (error) {
-      this.sessionLogger.error(
+      // A failed lazy load is cached for a short window, so polling clients repeat the
+      // same failure instead of respawning the provider binary. Log the first attempt
+      // and stay quiet for the repeats, or a single dead agent floods the journal.
+      const logLevel = isCachedAgentLoadFailure(error) ? "debug" : "error";
+      this.sessionLogger[logLevel](
         { err: error, agentId: msg.agentId },
         "Failed to handle fetch_agent_timeline_request",
       );
