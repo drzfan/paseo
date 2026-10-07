@@ -36,6 +36,15 @@ import type {
 
 const REQUEST_TIMEOUT_MS = 10000;
 
+// A dead worker leaves every terminal it owned pointing at a process that no
+// longer exists: reads return empty snapshots, subscriptions stay silent, and
+// clients cannot tell a ghost from a quiet terminal. The manager therefore purges
+// the worker's records and forks a replacement so new terminals still work.
+const WORKER_RESTART_BASE_DELAY_MS = 50;
+const WORKER_RESTART_MAX_DELAY_MS = 1_000;
+const WORKER_RESTART_WINDOW_MS = 60_000;
+const WORKER_RESTART_MAX_PER_WINDOW = 5;
+
 type RequiredWorkerTerminalInfo = WorkerTerminalInfo & { workspaceId: string };
 
 function requiredWorkspaceId(workspaceId: string | undefined): string {
@@ -150,7 +159,6 @@ function forkTerminalWorker(): TerminalWorkerProcess {
 export function createWorkerTerminalManager(
   managerOptions: WorkerTerminalManagerOptions = {},
 ): TerminalManager {
-  const worker = managerOptions.forkWorker ? managerOptions.forkWorker() : forkTerminalWorker();
   const requestTimeoutMs = managerOptions.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
   const pendingRequests = new Map<string, PendingRequest>();
   const recordsById = new Map<string, WorkerTerminalRecord>();
@@ -160,8 +168,19 @@ export function createWorkerTerminalManager(
   const terminalActivityListeners = new Set<TerminalActivityListener>();
   const terminalWorkspaceContributionChangedListeners =
     new Set<TerminalWorkspaceContributionChangedListener>();
+  // Set once the manager is deliberately torn down (killAll/terminate): an exit then
+  // is expected and must not fork a replacement worker.
+  let shuttingDown = false;
   let workerExited = false;
   let workerShutdownTimer: ReturnType<typeof setTimeout> | null = null;
+  let workerRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  let workerRestartTimestamps: number[] = [];
+
+  function forkWorkerProcess(): TerminalWorkerProcess {
+    return managerOptions.forkWorker ? managerOptions.forkWorker() : forkTerminalWorker();
+  }
+
+  let worker: TerminalWorkerProcess = forkWorkerProcess();
 
   function emitTerminalsChanged(event: TerminalsChangedEvent): void {
     for (const listener of Array.from(terminalsChangedListeners)) {
@@ -588,32 +607,109 @@ export function createWorkerTerminalManager(
     }
   }
 
-  worker.on("message", (message: TerminalWorkerToParentMessage) => {
-    if (isResponse(message)) {
-      const pending = pendingRequests.get(message.requestId);
-      if (!pending) {
-        return;
+  function purgeWorkerOwnedRecords(): void {
+    const purged = Array.from(recordsById.values());
+    recordsById.clear();
+    terminalIdsByCwd.clear();
+    terminalActivityTokenById.clear();
+    for (const record of purged) {
+      const exitInfo: TerminalExitInfo = {
+        exitCode: null,
+        signal: null,
+        lastOutputLines: [],
+      };
+      record.exitInfo = exitInfo;
+      for (const listener of Array.from(record.exitListeners)) {
+        listener(exitInfo);
       }
-      clearTimeout(pending.timeout);
-      pendingRequests.delete(message.requestId);
-      if (message.ok) {
-        pending.resolve(message.result);
-      } else {
-        pending.reject(new Error(message.error));
+      record.exitListeners.clear();
+      if (deriveTerminalActivityStatusBucket(record.activity) !== null) {
+        emitTerminalWorkspaceContributionChanged({
+          terminalId: record.info.id,
+          cwd: record.info.cwd,
+          workspaceId: record.info.workspaceId,
+        });
       }
+      // The cwd bucket is already empty, so every subscriber of that directory sees an
+      // empty terminal list: the ghosts disappear from list_terminals instead of
+      // lingering as mute sessions.
+      emitTerminalsChanged({ cwd: record.info.cwd, terminals: [] });
+    }
+  }
+
+  function scheduleWorkerRestart(): void {
+    if (workerRestartTimer) {
       return;
     }
-    handleWorkerEvent(message);
-  });
-
-  worker.on("exit", (code, signal) => {
-    workerExited = true;
-    if (workerShutdownTimer) {
-      clearTimeout(workerShutdownTimer);
-      workerShutdownTimer = null;
+    const now = Date.now();
+    workerRestartTimestamps = workerRestartTimestamps.filter(
+      (timestamp) => now - timestamp < WORKER_RESTART_WINDOW_MS,
+    );
+    if (workerRestartTimestamps.length >= WORKER_RESTART_MAX_PER_WINDOW) {
+      // A crash loop: stop forking and stay in the explicit "no terminal host" state
+      // instead of burning the event loop on spawn/exit cycles.
+      workerExited = true;
+      return;
     }
-    rejectPendingRequests(new Error(`Terminal worker exited (${signal ?? code ?? "unknown"})`));
-  });
+    workerRestartTimestamps.push(now);
+    const attempt = workerRestartTimestamps.length;
+    const delayMs = Math.min(
+      WORKER_RESTART_BASE_DELAY_MS * 2 ** (attempt - 1),
+      WORKER_RESTART_MAX_DELAY_MS,
+    );
+    workerRestartTimer = setTimeout(() => {
+      workerRestartTimer = null;
+      if (shuttingDown) {
+        return;
+      }
+      worker = forkWorkerProcess();
+      workerExited = false;
+      attachWorkerHandlers(worker);
+    }, delayMs);
+  }
+
+  function attachWorkerHandlers(attachedWorker: TerminalWorkerProcess): void {
+    attachedWorker.on("message", (message: TerminalWorkerToParentMessage) => {
+      if (isResponse(message)) {
+        const pending = pendingRequests.get(message.requestId);
+        if (!pending) {
+          return;
+        }
+        clearTimeout(pending.timeout);
+        pendingRequests.delete(message.requestId);
+        if (message.ok) {
+          pending.resolve(message.result);
+        } else {
+          pending.reject(new Error(message.error));
+        }
+        return;
+      }
+      handleWorkerEvent(message);
+    });
+
+    attachedWorker.on("exit", (code, signal) => {
+      if (worker !== attachedWorker) {
+        // A replaced worker exiting again carries no state: its records were purged
+        // when it was replaced, and the live worker owns the manager now.
+        return;
+      }
+      if (workerShutdownTimer) {
+        clearTimeout(workerShutdownTimer);
+        workerShutdownTimer = null;
+      }
+      workerExited = true;
+      rejectPendingRequests(new Error(`Terminal worker exited (${signal ?? code ?? "unknown"})`));
+      if (shuttingDown) {
+        return;
+      }
+      // Unexpected worker death: drop every record it owned (they are ghosts now) and
+      // bring a replacement worker up so the daemon can keep creating terminals.
+      purgeWorkerOwnedRecords();
+      scheduleWorkerRestart();
+    });
+  }
+
+  attachWorkerHandlers(worker);
 
   function sendRequest(input: TerminalWorkerRequestInput): Promise<unknown> {
     if (workerExited || !worker.connected) {
@@ -814,6 +910,11 @@ export function createWorkerTerminalManager(
     },
 
     killAll(): void {
+      shuttingDown = true;
+      if (workerRestartTimer) {
+        clearTimeout(workerRestartTimer);
+        workerRestartTimer = null;
+      }
       void sendRequest({ type: "killAll" })
         .catch(() => {
           // no-op

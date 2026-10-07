@@ -5,9 +5,9 @@ import { expect, test } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
-import { ensureAgentLoaded } from "./agent-loading.js";
+import { ensureAgentLoaded, type AgentLoaderManager } from "./agent-loading.js";
 import { startAgentRun } from "./agent-prompt.js";
-import { AgentStorage } from "./agent-storage.js";
+import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 import type {
   AgentClient,
   AgentLaunchContext,
@@ -15,6 +15,7 @@ import type {
   AgentResumeSessionOptions,
   AgentSession,
   AgentSessionConfig,
+  ManagedAgent,
 } from "./agent-sdk-types.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
 
@@ -196,6 +197,151 @@ test("loads an archived agent's history after its working directory is removed",
     await manager.closeAgent(agentId).catch(() => undefined);
     await manager.flush().catch(() => undefined);
     await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function createStoredAgentRecord(agentId: string, root: string): StoredAgentRecord {
+  const now = new Date().toISOString();
+  return {
+    id: agentId,
+    provider: "codex",
+    cwd: root,
+    createdAt: now,
+    updatedAt: now,
+    labels: {},
+    lastStatus: "closed",
+    config: {},
+    persistence: { provider: "codex", sessionId: "session-1" },
+  };
+}
+
+function createDeadAgentLoaderDeps(options: {
+  agentId: string;
+  root: string;
+  failureTtlMs: number;
+  failUntilAttempt?: number;
+  loadedAgent?: ManagedAgent | null;
+}): { deps: Parameters<typeof ensureAgentLoaded>[1]; resumeCalls: () => number } {
+  const record = createStoredAgentRecord(options.agentId, options.root);
+  let resumeCalls = 0;
+  const agentManager: AgentLoaderManager = {
+    getAgent: () => options.loadedAgent ?? null,
+    getRegisteredProviderIds: () => ["codex"],
+    resumeAgentFromPersistence: async (): Promise<ManagedAgent> => {
+      resumeCalls += 1;
+      if (options.failUntilAttempt !== undefined && resumeCalls <= options.failUntilAttempt) {
+        const error = new Error("spawn pi-src ENOENT");
+        (error as NodeJS.ErrnoException).code = "ENOENT";
+        throw error;
+      }
+      return { id: options.agentId } as unknown as ManagedAgent;
+    },
+    createAgent: async (): Promise<ManagedAgent> =>
+      ({ id: options.agentId }) as unknown as ManagedAgent,
+    hydrateTimelineFromProvider: async () => undefined,
+  };
+  const deps = {
+    agentManager,
+    agentStorage: { get: async () => record } as unknown as AgentStorage,
+    logger: createTestLogger(),
+    failureCacheTtlMs: options.failureTtlMs,
+  };
+  return { deps, resumeCalls: () => resumeCalls };
+}
+
+test("caches a failed lazy load so a dead agent is not respawned on every poll", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-failure-cache-"));
+  const agentId = "00000000-0000-4000-8000-000000000601";
+  const { deps, resumeCalls } = createDeadAgentLoaderDeps({
+    agentId,
+    root,
+    failureTtlMs: 60_000,
+    failUntilAttempt: Number.POSITIVE_INFINITY,
+  });
+
+  try {
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("spawn pi-src ENOENT");
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("spawn pi-src ENOENT");
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("spawn pi-src ENOENT");
+
+    // Three polls, one spawn: the negative cache absorbs the repeats.
+    expect(resumeCalls()).toBe(1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retries a failed lazy load once the negative cache expires", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-failure-ttl-"));
+  const agentId = "00000000-0000-4000-8000-000000000602";
+  const { deps, resumeCalls } = createDeadAgentLoaderDeps({
+    agentId,
+    root,
+    failureTtlMs: 40,
+    failUntilAttempt: 1,
+  });
+
+  try {
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("spawn pi-src ENOENT");
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("spawn pi-src ENOENT");
+    expect(resumeCalls()).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await expect(ensureAgentLoaded(agentId, deps)).resolves.toBeDefined();
+    expect(resumeCalls()).toBe(2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a successful lazy load clears the cached failure", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-failure-recovered-"));
+  const agentId = "00000000-0000-4000-8000-000000000603";
+  const { deps, resumeCalls } = createDeadAgentLoaderDeps({
+    agentId,
+    root,
+    failureTtlMs: 40,
+    failUntilAttempt: 1,
+  });
+
+  try {
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("spawn pi-src ENOENT");
+    await expect(ensureAgentLoaded(agentId, deps)).rejects.toThrow("spawn pi-src ENOENT");
+    expect(resumeCalls()).toBe(1);
+
+    // First successful load must clear the negative entry, otherwise the agent stays
+    // unloadable for the rest of the window even though the provider is healthy again.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await expect(ensureAgentLoaded(agentId, deps)).resolves.toBeDefined();
+    expect(resumeCalls()).toBe(2);
+
+    await expect(ensureAgentLoaded(agentId, deps)).resolves.toBeDefined();
+    expect(resumeCalls()).toBe(3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retries a failed lazy load immediately for callers that do not opt into the cache", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-failure-optout-"));
+  const agentId = "00000000-0000-4000-8000-000000000701";
+  const { deps, resumeCalls } = createDeadAgentLoaderDeps({
+    agentId,
+    root,
+    // No failureCacheTtlMs: import/prompt/voice callers must keep retrying so a
+    // fixed provider recovers on the very next attempt.
+    failureTtlMs: Number.POSITIVE_INFINITY,
+    failUntilAttempt: Number.POSITIVE_INFINITY,
+  });
+  const optOutDeps = { ...deps, failureCacheTtlMs: undefined };
+
+  try {
+    await expect(ensureAgentLoaded(agentId, optOutDeps)).rejects.toThrow("spawn pi-src ENOENT");
+    await expect(ensureAgentLoaded(agentId, optOutDeps)).rejects.toThrow("spawn pi-src ENOENT");
+
+    expect(resumeCalls()).toBe(2);
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
