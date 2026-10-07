@@ -31,7 +31,6 @@
     "packages/app",
     "packages/relay",
     "packages/website",
-    "packages/desktop",
     "packages/cli"
   ],
   "scripts": {
@@ -90,9 +89,6 @@
     "fdroid:changelogs:check": "node scripts/sync-fdroid-changelogs.mjs --check",
     "ios": "npm run ios --workspace=@getpaseo/app",
     "web": "npm run web --workspace=@getpaseo/app",
-    "dev:desktop": "cross-env PASEO_LISTEN=127.0.0.1:6768 npm run dev --workspace=@getpaseo/desktop",
-    "dev:win:desktop": "npm run dev:win --workspace=@getpaseo/desktop",
-    "build:desktop": "npm run build:app-deps:clean && cd packages/app && cross-env PASEO_WEB_PLATFORM=electron npx expo export --platform web && cd ../.. && npm run build --workspace=@getpaseo/desktop --",
     "db:query": "npm run db:query --workspace=@getpaseo/server --",
     "cli": "./scripts/dev-home.sh npx tsx packages/cli/src/index.js",
     "version": "npm run version:sync-internal && npm run fdroid:changelogs && npm run release:prepare && git add -A",
@@ -127,7 +123,6 @@
     "@vercel/nft": "^1.5.0",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
-    "electron": "44.2.0",
     "get-port-cli": "^3.0.0",
     "js-yaml": "^4.1.1",
     "knip": "^5.82.1",
