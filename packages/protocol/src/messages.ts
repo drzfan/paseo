@@ -910,6 +910,13 @@ export const AgentSnapshotPayloadSchema = z.object({
   workspaceId: z.string().optional(),
   model: z.string().nullable(),
   // COMPAT(featureValues): added in v0.15.0, remove after 2027-05-01. Built from controls + options.
+  /**
+   * Model the agent actually dispatched with, as reported by the provider runtime
+   * (e.g. a profile-resolved model). Null while no turn has run yet. Kept next to
+   * `model` (the configured, possibly virtual, name) so the UI can display the
+   * physical model without guessing.
+   */
+  displayModel: z.string().nullable().optional(),
   features: z.array(AgentFeatureSchema).optional(),
   /** Effective provider options: `config.json` defaults deep-merged with the agent's own. */
   options: ProviderOptionsSchema.optional(),
@@ -955,6 +962,7 @@ export const AgentListItemPayloadSchema = z.object({
   title: z.string().nullable(),
   provider: AgentProviderSchema,
   model: z.string().nullable(),
+  displayModel: z.string().nullable().optional(),
   thinkingOptionId: z.string().nullable().optional(),
   effectiveThinkingOptionId: z.string().nullable().optional(),
   status: AgentStatusSchema,
