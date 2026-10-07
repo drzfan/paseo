@@ -10,20 +10,16 @@
 ```bash
 npm run dev:server
 npm run dev:app
-npm run dev:desktop
 ```
+
+**Desktop (Electron) is not part of the default workspace set.** The user-facing docs target the daemon, web/mobile app, and CLI, so `packages/desktop` was removed from the root `package.json` `workspaces` list (and its root dev/build scripts) to keep installs and builds minimal. The source tree is still in the repo; to work on desktop again, re-add `packages/desktop` to the root workspaces and restore the `dev:desktop` / `build:desktop` scripts, then `npm install`. Sections below that mention desktop flows only apply once it is re-enabled.
 
 Root checkout dev is intentionally split across terminals:
 
 - `npm run dev:server` runs the daemon on `127.0.0.1:6768`.
 - `npm run dev:app` runs Expo on `http://localhost:8081` and connects to the dev daemon.
-- `npm run dev:desktop` runs its own Electron-flavored Expo server on the first free port from `8082` through `8089`. It never claims port `8081`.
 
-Desktop dev launches its desktop-managed daemon with `PASEO_NODE_ENV=development`,
-so development-only providers such as Mock Load Test are available. Packaged
-desktop launches always force the daemon to production mode.
-
-The web and desktop dev launchers pass the current Git branch to Metro as
+The web dev launcher passes the current Git branch to Metro as
 `EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL`. The expanded desktop sidebar shows it in
 the titlebar row. Production builds leave the variable unset and show no label.
 
@@ -65,7 +61,6 @@ PASEO_DEV_RESET_HOME=1 npm run dev            # clear and reseed the derived wor
 - Stable daemon launched by the desktop app: `localhost:6767`.
 - Root checkout dev daemon: `localhost:6768`.
 - Root checkout Expo: `http://localhost:8081`.
-- Root checkout desktop dev Expo: first free port from `8082` through `8089`.
 - `npm run dev` (Windows): `localhost:6767` for the daemon.
 
 In Paseo-managed worktree services, use the injected service environment rather than hardcoded root checkout ports.

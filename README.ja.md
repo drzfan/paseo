@@ -128,7 +128,6 @@ npx skills add getpaseo/paseo
 - `packages/server`: Paseo デーモン（エージェントプロセスのオーケストレーション、WebSocket API、MCP サーバー）
 - `packages/app`: Expo クライアント（iOS、Android、Web）
 - `packages/cli`: デーモンおよびエージェントワークフロー向け `paseo` CLI
-- `packages/desktop`: Electron デスクトップアプリ
 - `packages/relay`: リモート接続用リレーパッケージ
 - `packages/website`: マーケティングサイトとドキュメント（`paseo.sh`）
 
@@ -141,7 +140,6 @@ npm run dev
 # 個別のサービスを起動
 npm run dev:server
 npm run dev:app
-npm run dev:desktop
 npm run dev:website
 
 # サーバースタックをビルド

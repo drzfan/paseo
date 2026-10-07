@@ -184,7 +184,6 @@ Quick monorepo package map:
 - `packages/server`: Paseo daemon (agent process orchestration, WebSocket API, MCP server)
 - `packages/app`: Expo client (iOS, Android, web)
 - `packages/cli`: `paseo` CLI for daemon and agent workflows
-- `packages/desktop`: Electron desktop app
 - `packages/relay`: Relay transport and encryption used by the daemon and clients
 - `packages/website`: Marketing site and documentation (`paseo.sh`)
 
@@ -197,7 +196,6 @@ npm run dev
 # run individual surfaces
 npm run dev:server
 npm run dev:app
-npm run dev:desktop
 npm run dev:website
 
 # build the server stack

@@ -128,7 +128,6 @@ Monorepo 包结构速览：
 - `packages/server`：Paseo daemon（agent 进程编排、WebSocket API、MCP server）
 - `packages/app`：Expo 客户端（iOS、Android、Web）
 - `packages/cli`：用于 daemon 和 agent 工作流的 `paseo` CLI
-- `packages/desktop`：Electron 桌面 app
 - `packages/relay`：用于远程连接的 relay 包
 - `packages/website`：营销站点和文档（`paseo.sh`）
 
@@ -141,7 +140,6 @@ npm run dev
 # 单独运行某个界面
 npm run dev:server
 npm run dev:app
-npm run dev:desktop
 npm run dev:website
 
 # 构建 server stack

@@ -205,6 +205,12 @@ Use the beta path when you need to:
 
 ## Staged rollout (stable channel)
 
+> **Note (desktop workspace removal):** the `Desktop Release`, `Desktop Packages`, and
+> `Desktop Rollout` workflows were removed together with the `packages/desktop` npm
+> workspace. The desktop source tree remains in the repo but is no longer built,
+> tested, or released from this checkout by default. The sections below are kept as
+> historical reference; they only apply again if the desktop workspace is re-enabled.
+
 Stable desktop releases go out via a linear time-based rollout for automatic update checks: 0% admitted when the updater manifests appear, 100% admitted 36 hours later, linear ramp in between. Manual checks bypass the rollout so a user can install immediately when they click **Check**. Beta releases bypass the rollout entirely — beta users always receive updates immediately.
 
 The rollout is driven by a `rolloutHours` field stamped into the GitHub Release manifests (`latest-mac.yml`, `latest-linux.yml`, `latest.yml`) by the `finalize-rollout` job in `desktop-release.yml`.
