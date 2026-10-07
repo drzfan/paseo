@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AGENT_LIFECYCLE_STATUSES } from "./agent-manager.js";
 import {
   buildStoredAgentPayload,
+  toAgentListItemPayload,
   toAgentPayload,
   toRecentProviderSessionDescriptorPayload,
   toStoredAgentRecord,
@@ -111,6 +112,43 @@ it("projects the daemon-owned active turn identity", () => {
     turnId: "test-turn-id",
     startedAt: "2025-01-01T00:00:01.000Z",
   });
+});
+
+it("projects the dispatched model into displayModel on the snapshot and list payloads", () => {
+  const agent = createManagedAgent({
+    runtimeInfo: {
+      provider: "pi",
+      sessionId: "session-123",
+      model: "zai/glm-4.6",
+      modeId: "plan",
+    },
+  });
+
+  expect(toAgentPayload(agent).displayModel).toBe("zai/glm-4.6");
+  expect(toAgentListItemPayload(toAgentPayload(agent)).displayModel).toBe("zai/glm-4.6");
+  // The configured (possibly virtual) model name stays untouched next to the dispatched one.
+  expect(toAgentPayload(agent).model).toBe("claude-3.5-sonnet");
+});
+
+it("omits displayModel when no dispatched model is known yet", () => {
+  const agent = createManagedAgent({ runtimeInfo: undefined });
+
+  expect(toAgentPayload(agent).displayModel).toBeNull();
+  expect(toAgentListItemPayload(toAgentPayload(agent)).displayModel).toBeNull();
+});
+
+it("keeps the configured model when the runtime model matches it", () => {
+  const agent = createManagedAgent({
+    config: { model: "claude-3.5-sonnet" },
+    runtimeInfo: {
+      provider: "claude",
+      sessionId: "session-123",
+      model: "claude-3.5-sonnet",
+    },
+  });
+
+  expect(toAgentPayload(agent).model).toBe("claude-3.5-sonnet");
+  expect(toAgentPayload(agent).displayModel).toBe("claude-3.5-sonnet");
 });
 
 function createPermission(overrides: Partial<AgentPermissionRequest> = {}): AgentPermissionRequest {

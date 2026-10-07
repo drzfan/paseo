@@ -91,6 +91,11 @@ export interface Agent {
   cwd: string;
   workspaceId?: string;
   model: string | null;
+  /**
+   * Model the agent actually dispatched with (server-resolved), when known.
+   * Absent/null until the first assistant message comes back.
+   */
+  displayModel?: string | null;
   features?: AgentFeature[];
   thinkingOptionId?: string | null;
   requiresAttention?: boolean;
