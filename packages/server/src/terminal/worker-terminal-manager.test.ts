@@ -13,6 +13,7 @@ import type {
 import {
   resolvePaseoCliBinDir,
   resolvePaseoCliExecutablePath,
+  type TerminalExitInfo,
   type TerminalSession,
 } from "./terminal.js";
 import type { TerminalState } from "@getpaseo/protocol/messages";
@@ -908,6 +909,196 @@ it("produces one terminals-changed snapshot and one contribution event per activ
       workspaceId: "ws-test",
     },
   ]);
+});
+
+it("purges ghost records, broadcasts terminalsChanged, and resurrects the worker when it dies unexpectedly", async () => {
+  const initialWorker = new FakeTerminalWorker();
+  const forkedWorkers: FakeTerminalWorker[] = [initialWorker];
+  let forkCount = 0;
+  manager = createWorkerTerminalManager({
+    requestTimeoutMs: 50,
+    forkWorker: () => {
+      forkCount += 1;
+      if (forkCount === 1) {
+        return initialWorker;
+      }
+      const nextWorker = new FakeTerminalWorker();
+      forkedWorkers.push(nextWorker);
+      return nextWorker;
+    },
+  });
+  const workingActivity = { state: "working" as const, changedAt: 1000 };
+
+  initialWorker.emitWorkerMessage({
+    type: "terminalCreated",
+    terminal: {
+      id: "terminal-ghost",
+      name: "Shell",
+      cwd: "/workspace",
+      workspaceId: "ws-test",
+      activity: workingActivity,
+    },
+    state: createTerminalState(),
+  });
+
+  const exits: TerminalExitInfo[] = [];
+  const snapshots: Array<{ cwd: string; terminalIds: string[] }> = [];
+  const contributions: TerminalWorkspaceContributionChangedEvent[] = [];
+  manager.getTerminal("terminal-ghost")?.onExit((info) => {
+    exits.push(info);
+  });
+  manager.subscribeTerminalsChanged((event) => {
+    snapshots.push({ cwd: event.cwd, terminalIds: event.terminals.map((t) => t.id) });
+  });
+  manager.subscribeTerminalWorkspaceContributionChanged((event) => {
+    contributions.push(event);
+  });
+
+  initialWorker.emit("exit", null, "SIGKILL");
+
+  await waitForCondition(() => manager?.getTerminal("terminal-ghost") === undefined, 5000);
+
+  // The ghost must be gone from every local read path, not just getTerminal.
+  expect(manager.listDirectories()).not.toContain("/workspace");
+  expect(await manager.getTerminals("/workspace")).toEqual([]);
+  // Subscribers must be told the terminal is gone, and the workspace contribution
+  // it was driving must be recalculated.
+  expect(snapshots).toEqual([{ cwd: "/workspace", terminalIds: [] }]);
+  expect(contributions).toEqual([
+    { terminalId: "terminal-ghost", cwd: "/workspace", workspaceId: "ws-test" },
+  ]);
+  expect(exits).toEqual([{ exitCode: null, signal: null, lastOutputLines: [] }]);
+
+  // A replacement worker is forked so the daemon can still create terminals.
+  await waitForCondition(() => forkedWorkers.length === 2, 5000);
+  expect(forkedWorkers[1]).not.toBe(initialWorker);
+  forkedWorkers[1].emitWorkerMessage({
+    type: "terminalCreated",
+    terminal: {
+      id: "terminal-after-restart",
+      name: "Shell",
+      cwd: "/workspace",
+      workspaceId: "ws-test",
+      activity: { state: "idle", changedAt: 0 },
+    },
+    state: createTerminalState(),
+  });
+  expect(manager.getTerminal("terminal-after-restart")).toBeDefined();
+});
+
+it("does not resurrect the worker after an intentional killAll shutdown", async () => {
+  const worker = new FakeTerminalWorker();
+  let forkCount = 0;
+  manager = createWorkerTerminalManager({
+    requestTimeoutMs: 50,
+    forkWorker: () => {
+      forkCount += 1;
+      return worker;
+    },
+  });
+
+  worker.emitWorkerMessage({
+    type: "terminalCreated",
+    terminal: {
+      id: "terminal-a",
+      name: "Shell",
+      cwd: "/workspace",
+      workspaceId: "ws-test",
+      activity: null,
+    },
+    state: createTerminalState(),
+  });
+
+  manager.killAll();
+  await waitForCondition(() => manager?.getTerminal("terminal-a") === undefined, 5000);
+  // Any restart would land well inside this window; none must be scheduled.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  expect(forkCount).toBe(1);
+});
+
+it("rejects in-flight worker requests when the worker dies", async () => {
+  const worker = new FakeTerminalWorker();
+  manager = createWorkerTerminalManager({
+    requestTimeoutMs: 30000,
+    forkWorker: () => worker,
+  });
+
+  worker.emitWorkerMessage({
+    type: "terminalCreated",
+    terminal: {
+      id: "terminal-a",
+      name: "Shell",
+      cwd: "/workspace",
+      workspaceId: "ws-test",
+      activity: null,
+    },
+    state: createTerminalState(),
+  });
+
+  const pending = manager.getTerminalState("terminal-a");
+  const assertion = expect(pending).rejects.toThrow(/Terminal worker exited \(SIGKILL\)/);
+  worker.emit("exit", null, "SIGKILL");
+  await assertion;
+});
+
+it("keeps records from a replacement worker when the dead worker emits again", async () => {
+  const initialWorker = new FakeTerminalWorker();
+  const forkedWorkers: FakeTerminalWorker[] = [initialWorker];
+  let forkCount = 0;
+  manager = createWorkerTerminalManager({
+    requestTimeoutMs: 50,
+    forkWorker: () => {
+      forkCount += 1;
+      if (forkCount === 1) {
+        return initialWorker;
+      }
+      const nextWorker = new FakeTerminalWorker();
+      forkedWorkers.push(nextWorker);
+      return nextWorker;
+    },
+  });
+
+  initialWorker.emitWorkerMessage({
+    type: "terminalCreated",
+    terminal: {
+      id: "terminal-old",
+      name: "Shell",
+      cwd: "/workspace",
+      workspaceId: "ws-test",
+      activity: null,
+    },
+    state: createTerminalState(),
+  });
+
+  initialWorker.emit("exit", null, "SIGKILL");
+  await waitForCondition(() => forkedWorkers.length === 2, 5000);
+
+  forkedWorkers[1].emitWorkerMessage({
+    type: "terminalCreated",
+    terminal: {
+      id: "terminal-new",
+      name: "Shell",
+      cwd: "/workspace",
+      workspaceId: "ws-test",
+      activity: null,
+    },
+    state: createTerminalState(),
+  });
+
+  const forkedBefore = forkedWorkers.length;
+  const snapshots: Array<{ cwd: string; terminalIds: string[] }> = [];
+  manager.subscribeTerminalsChanged((event) => {
+    snapshots.push({ cwd: event.cwd, terminalIds: event.terminals.map((t) => t.id) });
+  });
+
+  // A stale exit from the already-replaced worker must not purge the live one.
+  initialWorker.emit("exit", null, "SIGKILL");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+
+  expect(manager.getTerminal("terminal-new")).toBeDefined();
+  expect(forkedWorkers).toHaveLength(forkedBefore);
+  expect(snapshots).toEqual([]);
 });
 
 it("removes a killed worker terminal from terminalExit without duplicate snapshots", async () => {

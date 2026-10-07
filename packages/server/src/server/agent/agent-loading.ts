@@ -26,6 +26,78 @@ interface PendingAgentInitialization {
 
 const pendingAgentInitializations = new Map<string, PendingAgentInitialization>();
 
+/**
+ * How long a failed lazy load stays cached once a caller opts in. Polling clients retry a
+ * dead agent's timeline on a timer; without this window every poll respawns the provider
+ * binary just to watch it die, which floods the logs and starves the event loop.
+ */
+export const AGENT_LOAD_FAILURE_CACHE_TTL_MS = 30_000;
+const AGENT_LOAD_FAILURE_CACHE_LIMIT = 500;
+
+const CACHED_AGENT_LOAD_FAILURE = Symbol.for("paseo.cachedAgentLoadFailure");
+
+interface CachedAgentLoadFailure {
+  error: Error;
+  expiresAt: number;
+}
+
+const agentLoadFailures = new Map<string, CachedAgentLoadFailure>();
+
+/**
+ * True when the error was replayed from the negative cache instead of a fresh attempt.
+ * Callers can use it to log repeats quietly — the first failure is already on record.
+ */
+export function isCachedAgentLoadFailure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as { [CACHED_AGENT_LOAD_FAILURE]?: boolean })[CACHED_AGENT_LOAD_FAILURE] === true
+  );
+}
+
+function markCachedAgentLoadFailure(error: Error): Error {
+  Object.defineProperty(error, CACHED_AGENT_LOAD_FAILURE, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return error;
+}
+
+function pruneAgentLoadFailures(now: number): void {
+  for (const [agentId, entry] of agentLoadFailures) {
+    if (entry.expiresAt <= now) {
+      agentLoadFailures.delete(agentId);
+    }
+  }
+  while (agentLoadFailures.size >= AGENT_LOAD_FAILURE_CACHE_LIMIT) {
+    const oldest = agentLoadFailures.keys().next();
+    if (oldest.done) {
+      return;
+    }
+    agentLoadFailures.delete(oldest.value);
+  }
+}
+
+function rememberAgentLoadFailure(agentId: string, error: Error, ttlMs: number, now: number): void {
+  if (!(ttlMs > 0)) {
+    return;
+  }
+  pruneAgentLoadFailures(now);
+  agentLoadFailures.set(agentId, { error, expiresAt: now + ttlMs });
+}
+
+function readCachedAgentLoadFailure(agentId: string, now: number): Error | null {
+  const cached = agentLoadFailures.get(agentId);
+  if (!cached) {
+    return null;
+  }
+  if (cached.expiresAt <= now) {
+    agentLoadFailures.delete(agentId);
+    return null;
+  }
+  return cached.error;
+}
+
 export type AgentLoaderManager = Pick<
   AgentManager,
   | "createAgent"
@@ -41,6 +113,13 @@ export interface EnsureAgentLoadedDeps {
   agentStorage: AgentStorage;
   validProviders?: Iterable<AgentProvider>;
   broadcastTimeline?: boolean;
+  /**
+   * Enables the negative cache: how long a failed load for the same agent stays
+   * replayed (no storage read, no provider spawn). Opt-in per caller so that
+   * user-driven paths (prompt, import, voice) keep retrying immediately after a
+   * fix, while poll loops stop hammering a known-dead agent.
+   */
+  failureCacheTtlMs?: number;
   logger: Logger;
 }
 
@@ -82,6 +161,16 @@ export async function ensureAgentLoaded(
   const existing = deps.agentManager.getAgent(agentId);
   if (existing) {
     return existing;
+  }
+
+  // Opt-in negative cache: replay a recent failure instead of respawning the provider
+  // binary that just died. Entries expire on their own, and a successful load clears
+  // them, so a fixed agent loads on the next attempt.
+  const failureCacheTtlMs = deps.failureCacheTtlMs;
+  const cachedFailure =
+    failureCacheTtlMs === undefined ? null : readCachedAgentLoadFailure(agentId, Date.now());
+  if (cachedFailure) {
+    throw markCachedAgentLoadFailure(cachedFailure);
   }
 
   // A close may have started after the first barrier observed no in-flight
@@ -149,7 +238,16 @@ export async function ensureAgentLoaded(
   pendingAgentInitializations.set(agentId, pending);
 
   try {
-    return await initPromise;
+    const loaded = await initPromise;
+    if (failureCacheTtlMs !== undefined) {
+      agentLoadFailures.delete(agentId);
+    }
+    return loaded;
+  } catch (error) {
+    if (error instanceof Error && failureCacheTtlMs !== undefined) {
+      rememberAgentLoadFailure(agentId, error, failureCacheTtlMs, Date.now());
+    }
+    throw error;
   } finally {
     const current = pendingAgentInitializations.get(agentId);
     if (current === pending) {
