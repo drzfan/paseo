@@ -92,6 +92,9 @@ export function buildPiLaunch(input: {
   const protocolMode = input.session.protocolMode ?? "rpc";
   appendPiLaunchArgs(argv, input.session, protocolMode);
 
+  // Session env overlays provider runtimeSettings env and is forwarded to the child
+  // process as-is (jsonl-rpc-process envOverlay). The create env is explicit-only —
+  // it does not inherit the daemon or caller environment. See docs/agent-env.md.
   return {
     cwd: input.session.cwd,
     argv,
