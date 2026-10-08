@@ -6241,6 +6241,10 @@ export class AgentManager {
       agentId,
       mcpServers,
       mcpServerOwners,
+      // The caller-supplied create env is an explicit overlay, not an inheritance
+      // surface: only keys present in the create request (plus the daemon-injected
+      // identity keys below) reach the child process. No key whitelist is applied
+      // on this path; see docs/agent-env.md.
       env: {
         ...env,
         ...agentIdentityEnv({ agentId, cwd, opening }),
