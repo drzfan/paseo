@@ -1,6 +1,11 @@
 const PASEO_NODE_ENV = "PASEO_NODE_ENV";
 const ELECTRON_RUN_AS_NODE = "ELECTRON_RUN_AS_NODE";
 
+// Spawn boundary scrub list. Agent.create `env` and every other overlay pass through
+// to a child verbatim — there is no key allowlist here — but these keys are deleted
+// by name. They control how the daemon itself was launched; leaking them lets a child
+// (or a nested daemon/Electron-node shim a child spawns) inherit the parent's runtime
+// mode and mis-launch. See docs/agent-env.md.
 const RUNTIME_CONTROL_ENV_KEYS = [
   PASEO_NODE_ENV,
   "PASEO_DESKTOP_MANAGED",
