@@ -640,3 +640,30 @@ Always run typecheck after changes:
 ```bash
 npm run typecheck
 ```
+
+The gate is only meaningful in a faithfully reproduced environment. These two
+prerequisites mirror CI order (`ci.yml` runs them before `npm run typecheck`):
+
+1. **Complete install in the checkout itself — never a borrowed `node_modules`.**
+   Workspace-nested dependencies live in `packages/*/node_modules`, so a symlinked
+   root `node_modules` makes them invisible: `commander@7` shadows `commander@12`,
+   and `@getpaseo/protocol/*`, `expo-clipboard`, `openai`, `node-pty`,
+   `@opencode-ai/sdk` stop resolving. The result is thousands of phantom
+   `TS2307` / implicit-`any` errors that read like code debt. Use `npm ci` inside
+   the checkout (with `--ignore-scripts`, replay
+   `node scripts/postinstall-patches.mjs`).
+2. **Built workspace packages.** Types are published through each package's
+   `exports` map into `dist/*.d.ts`, so run `npm run build:server` first.
+
+Stale incremental caches also fake a red baseline: `tsconfig.base.json` sets
+`incremental: true`, so `tsgo` writes `packages/*/tsconfig.tsbuildinfo`
+(gitignored). A cache written while the tree was broken keeps replaying the old
+phantom errors after the cause is fixed. When a result looks impossible, drop the
+caches and re-run:
+
+```bash
+find . -name tsconfig.tsbuildinfo -not -path "*/node_modules/*" -delete
+```
+
+`packages/desktop` is deliberately outside the workspace set, so it is not
+covered by `npm run typecheck`.
