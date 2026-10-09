@@ -388,7 +388,8 @@ describe("mergeDerivedProviderOverrides", () => {
       "paseo-worker": {
         extends: "pi",
         label: "worker (paseo-profile)",
-        env: { PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir", X: "1" },
+        env: { PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+          PBASH_SETTLE_REMIND_FLAG_PATH: "/root/pi-profiles/worker/agent-dir/settle-remind.on", X: "1" },
       },
     };
 
@@ -406,6 +407,7 @@ describe("hand-written provider equivalence (spec §2.1 migration check)", () =>
       label: "designer (paseo-profile)",
       env: {
         PI_CODING_AGENT_DIR: "/root/pi-profiles/designer/agent-dir",
+          PBASH_SETTLE_REMIND_FLAG_PATH: "/root/pi-profiles/designer/agent-dir/settle-remind.on",
         PBASH_DIRECTORY_ROLE_SOURCE: "on",
       },
     },
@@ -414,6 +416,7 @@ describe("hand-written provider equivalence (spec §2.1 migration check)", () =>
       label: "foreman (paseo-profile)",
       env: {
         PI_CODING_AGENT_DIR: "/root/pi-profiles/foreman/agent-dir",
+          PBASH_SETTLE_REMIND_FLAG_PATH: "/root/pi-profiles/foreman/agent-dir/settle-remind.on",
         PBASH_DIRECTORY_ROLE_SOURCE: "on",
       },
     },
@@ -430,6 +433,7 @@ describe("hand-written provider equivalence (spec §2.1 migration check)", () =>
       label: "quick (paseo-profile)",
       env: {
         PI_CODING_AGENT_DIR: "/root/pi-profiles/quick/agent-dir",
+          PBASH_SETTLE_REMIND_FLAG_PATH: "/root/pi-profiles/quick/agent-dir/settle-remind.on",
         PBASH_DIRECTORY_ROLE_SOURCE: "on",
       },
     },
@@ -438,6 +442,7 @@ describe("hand-written provider equivalence (spec §2.1 migration check)", () =>
       label: "reviewer (paseo-profile)",
       env: {
         PI_CODING_AGENT_DIR: "/root/pi-profiles/reviewer/agent-dir",
+          PBASH_SETTLE_REMIND_FLAG_PATH: "/root/pi-profiles/reviewer/agent-dir/settle-remind.on",
         PBASH_DIRECTORY_ROLE_SOURCE: "on",
       },
     },
@@ -446,6 +451,7 @@ describe("hand-written provider equivalence (spec §2.1 migration check)", () =>
       label: "sol (paseo-profile)",
       env: {
         PI_CODING_AGENT_DIR: "/root/pi-profiles/sol/agent-dir",
+          PBASH_SETTLE_REMIND_FLAG_PATH: "/root/pi-profiles/sol/agent-dir/settle-remind.on",
         PBASH_DIRECTORY_ROLE_SOURCE: "on",
       },
     },
@@ -454,6 +460,7 @@ describe("hand-written provider equivalence (spec §2.1 migration check)", () =>
       label: "worker (paseo-profile)",
       env: {
         PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+        PBASH_SETTLE_REMIND_FLAG_PATH: "/root/pi-profiles/worker/agent-dir/settle-remind.on",
         PBASH_DIRECTORY_ROLE_SOURCE: "on",
       },
     },
@@ -472,9 +479,8 @@ describe("hand-written provider equivalence (spec §2.1 migration check)", () =>
       expect(derivedEnv).toEqual(handWrittenEnv);
       expect(entry?.extends).toBe(handWritten.extends);
       expect(entry?.label).toBe(handWritten.label);
-      expect(Object.keys(entry?.env ?? {}).filter((key) => key !== "PI_CODING_AGENT_DIR")).toEqual(
-        [],
-      );
+      // v3 08 起 profile.json env 段展开进派生 env（键集=PI_CODING_AGENT_DIR ∪ env 段键）——
+      // 原「除 PI_CODING_AGENT_DIR 外必空」断言过时删除（等价性已由 derivedEnv toEqual handWrittenEnv 保证）。
     }
   });
 
