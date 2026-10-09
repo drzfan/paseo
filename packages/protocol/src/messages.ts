@@ -194,6 +194,13 @@ const MutableMetadataGenerationConfigSchema = z
     providers: z.array(MutableStructuredGenerationProviderSchema).default([]),
   })
   .passthrough();
+// Mirrors `agents.profileDerivation` in the persisted config: where the
+// directory-derived provider layer scans for role directories.
+const MutableProfileDerivationConfigSchema = z
+  .object({
+    profilesDir: z.string().min(1),
+  })
+  .strict();
 
 const MutableBrowserToolsConfigSchema = z
   .object({
@@ -239,6 +246,7 @@ export const MutableDaemonConfigSchema = z
     usage: z.object({ enabled: z.boolean() }).optional(),
     browserTools: MutableBrowserToolsConfigSchema.default({ enabled: false }),
     providers: z.record(z.string(), MutableDaemonProviderConfigSchema).default({}),
+    profileDerivation: MutableProfileDerivationConfigSchema.optional(),
     metadataGeneration: MutableMetadataGenerationConfigSchema.default({ providers: [] }),
     autoArchiveAfterMerge: z.boolean().default(false),
     enableTerminalAgentHooks: z.boolean().default(false),

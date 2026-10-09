@@ -16,6 +16,8 @@ import {
   writePrivateFileAtomic,
   writePrivateFileAtomicSync,
 } from "./private-files.js";
+import { DEFAULT_PROFILES_DIR } from "./profile-provider-deriver.js";
+import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protocol/agent-profile";
 import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
 import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";
@@ -354,6 +356,13 @@ export const PersistedConfigSchema = z
         catalogRefreshTimeoutMs: z.number().int().positive().max(2_147_483_647).optional(),
         metadataGeneration: AgentMetadataGenerationSchema.optional(),
         skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
+        // Directory-derived providers (profile-provider-deriver.ts). Omitting the
+        // section keeps the default profiles tree; pointing it elsewhere (e.g. a
+        // sandbox copy) only changes where providers are derived from.
+        profileDerivation: z
+          .object({ profilesDir: z.string().min(1) })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -392,6 +401,11 @@ const DEFAULT_PERSISTED_CONFIG = PersistedConfigSchema.parse({
   },
   app: {
     baseUrl: "https://app.paseo.sh",
+  },
+  agents: {
+    profileDerivation: {
+      profilesDir: DEFAULT_PROFILES_DIR,
+    },
   },
 }) as PersistedConfig;
 

@@ -221,6 +221,33 @@ function foldConfigProfiles<T extends { agentProfiles?: AgentProfile[] }>(input:
 export function toWireDaemonConfig(config: MutableDaemonConfig): MutableDaemonConfig {
   if (!config.agentProfiles) return config;
   return { ...config, agentProfiles: config.agentProfiles.map(withLegacyProfileFeatureValues) };
+ * M2 guard: keep directory-derived providers out of config.json.
+ *
+ * The mutable config carries derived declarations (they are regenerated from the
+ * profiles directory on every load/reload), so a patch that echoes the live provider
+ * map back at the daemon would freeze a dynamic snapshot into the static file. Only
+ * derived names that the on-disk config does not already declare are dropped: a
+ * hand-written section keeps its own entry and stays editable (static wins).
+ */
+function omitDerivedProvidersFromPatch(
+  patch: Omit<SupportedMutableConfigPatch, "removeProviders">,
+  derivedProviderNames: readonly string[],
+  persisted: PersistedConfig,
+): Omit<SupportedMutableConfigPatch, "removeProviders"> {
+  if (!patch.providers || derivedProviderNames.length === 0) {
+    return patch;
+  }
+  const staticProviderNames = new Set(Object.keys(persisted.agents?.providers ?? {}));
+  const providers = Object.fromEntries(
+    Object.entries(patch.providers).filter(
+      ([providerName]) =>
+        !derivedProviderNames.includes(providerName) || staticProviderNames.has(providerName),
+    ),
+  );
+  if (Object.keys(providers).length === Object.keys(patch.providers).length) {
+    return patch;
+  }
+  return { ...patch, providers };
 }
 
 function getValueAtPath(config: MutableDaemonConfig, path: string): unknown {
@@ -255,6 +282,7 @@ const RELOADABLE_PATHS = [
   "agents.resumeOnStartup",
   "agents.resumePrompt",
   "agents.providers",
+  "agents.profileDerivation",
   "agents.catalogRefreshTimeoutMs",
   "agents.metadataGeneration",
   "agents.skills.selection",
@@ -283,6 +311,7 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["agents.resumeOnStartup", "resumeOnStartup"],
   ["agents.resumePrompt", "resumePrompt"],
   ["agents.providers", "providers"],
+  ["agents.profileDerivation", "profileDerivation"],
   ["agents.catalogRefreshTimeoutMs", "catalogRefreshTimeoutMs"],
   ["agents.metadataGeneration", "metadataGeneration"],
   ["agents.skills.selection", "skills.selection"],
@@ -412,6 +441,7 @@ export class DaemonConfigStore {
   private readonly fieldChangeHandlers = new Map<string, Set<FieldChangeHandler>>();
   private readonly relayEnabledMutable: boolean;
   private readonly reloadSource: DaemonConfigReloadSource | undefined;
+  private readonly derivedProviderNames: (() => readonly string[]) | undefined;
   private readonly startupPersisted: PersistedConfig;
   private readonly speechOwner: SpeechSettingsOwner | undefined;
   private lastKnownPersisted: PersistedConfig;
@@ -425,6 +455,8 @@ export class DaemonConfigStore {
       reloadSource?: DaemonConfigReloadSource;
       startupPersisted?: PersistedConfig;
       speech?: SpeechSettingsOwner;
+      /** Provider names owned by the directory-derived layer (never persisted). */
+      derivedProviderNames?: () => readonly string[];
     } = {},
   ) {
     this.paseoHome = paseoHome;
@@ -432,6 +464,7 @@ export class DaemonConfigStore {
     this.relayEnabledMutable = options.relayEnabledMutable ?? true;
     this.reloadSource = options.reloadSource;
     this.speechOwner = options.speech;
+    this.derivedProviderNames = options.derivedProviderNames;
     this.startupPersisted = options.startupPersisted ?? loadPersistedConfig(paseoHome, this.logger);
     this.lastKnownPersisted = this.startupPersisted;
     this.current = MutableDaemonConfigSchema.parse({
@@ -751,10 +784,12 @@ export class DaemonConfigStore {
     removeProviders: readonly string[],
   ): Promise<{ previous: PersistedConfig; knownNext: PersistedConfig }> {
     const persisted = await loadPersistedConfigAsync(this.paseoHome, this.logger);
+    const derivedProviderNames = this.derivedProviderNames?.() ?? [];
+    const persistablePatch = omitDerivedProvidersFromPatch(patch, derivedProviderNames, persisted);
     const merge = (source: PersistedConfig) =>
       mergeMutablePatchIntoPersistedConfig({
         persisted: source,
-        patch,
+        patch: persistablePatch,
         removeProviders,
         persistRelayEnabled: this.relayEnabledMutable,
       });

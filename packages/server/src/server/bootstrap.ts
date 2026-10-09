@@ -170,6 +170,7 @@ import {
   type ResolvedDaemonSettings,
   type CliConfigOverrides,
 } from "./config.js";
+import { deriveProfileProviders, type DeriveFailure } from "./profile-provider-deriver.js";
 import { resolvePaseoToolPolicy } from "./agent/paseo-tool-policy.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
@@ -480,6 +481,16 @@ export interface PaseoDaemonConfig {
     }>;
   };
   providerOverrides?: Record<string, ProviderOverride>;
+  /**
+   * Directory-derived provider layer (profile-provider-deriver.ts). Absent means
+   * "do not derive" — embedders that build a PaseoDaemonConfig by hand (tests, the
+   * agent SDK) opt out explicitly. `loadConfig`/`resolveConfigFromPersisted` always
+   * set it, defaulting to the standard profiles tree.
+   */
+  profileDerivation?: {
+    profilesDir: string;
+    failures: readonly DeriveFailure[];
+  };
   log?: PersistedConfig["log"];
   onLifecycleIntent?: (intent: DaemonLifecycleIntent) => void;
   pushNotificationSender?: PushNotificationSender;
@@ -576,7 +587,23 @@ function resolveReloadEnv(config: PaseoDaemonConfig): NodeJS.ProcessEnv {
   return config.configReload?.env ?? process.env;
 }
 
-function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): MutableDaemonConfig {
+/**
+ * Derived-provider failures never abort startup: every broken role directory is
+ * skipped and reported here (spec §1.2 "DeriveResult.failures 不炸调用方").
+ */
+function logProfileDerivationFailures(
+  failures: readonly DeriveFailure[] | undefined,
+  logger: Logger,
+): void {
+  for (const failure of failures ?? []) {
+    logger.warn(
+      { role: failure.role, code: failure.code },
+      `Skipped profile-derived provider: ${failure.message}`,
+    );
+  }
+}
+
+function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDaemonConfig {
   const providers = config.providerOverrides ?? {};
 
   const initialConfig: MutableDaemonConfig = {
@@ -618,7 +645,17 @@ function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): Mutab
     initialConfig.agentProfiles = config.agentProfiles;
   }
 
+  applyProfileDerivationToMutableConfig(config, initialConfig);
+
   return initialConfig;
+}
+
+function applyProfileDerivationToMutableConfig(
+  config: PaseoDaemonConfig,
+  initialConfig: MutableDaemonConfig,
+): void {
+  if (config.profileDerivation === undefined) return;
+  initialConfig.profileDerivation = { profilesDir: config.profileDerivation.profilesDir };
 }
 
 export async function createPaseoDaemon(
@@ -638,6 +675,8 @@ export async function createPaseoDaemon(
   const bootstrapStart = performance.now();
   const elapsed = () => `${(performance.now() - bootstrapStart).toFixed(0)}ms`;
   const daemonVersion = config.daemonVersion ?? resolveDaemonVersion(import.meta.url);
+  const derivationLogger = logger.child({ module: "profile-provider-deriver" });
+  logProfileDerivationFailures(config.profileDerivation?.failures, derivationLogger);
   const initialMutableConfig = createInitialMutableDaemonConfig(config);
   const speechService = createSpeechService({
     logger,
@@ -653,6 +692,16 @@ export async function createPaseoDaemon(
       env: resolveReloadEnv(config),
       speechService,
     }),
+    // Derived providers are re-scanned on every write so a role directory that
+    // appeared after startup still keeps its declaration out of config.json.
+    derivedProviderNames: () =>
+      config.profileDerivation
+        ? [
+            ...deriveProfileProviders({
+              profilesDir: config.profileDerivation.profilesDir,
+            }).derived.keys(),
+          ]
+        : [],
     reloadSource: {
       resolve: (persisted) => {
         const reloaded = resolveReloadableConfig(persisted, {
@@ -660,6 +709,7 @@ export async function createPaseoDaemon(
           cli: config.configReload?.cli,
           relayEnabledFallback: config.configReload?.relayEnabledFallback,
         });
+        logProfileDerivationFailures(reloaded.profileDerivation?.failures, derivationLogger);
         return {
           mutable: createInitialMutableDaemonConfig(reloaded),
           overrideControlledPaths: reloaded.overrideControlledPaths,
