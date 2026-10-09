@@ -239,7 +239,10 @@ describe("PiCliRuntime", () => {
 
     await runtime.startSession({ cwd: "/workspace/project" });
 
-    expect(launches[0]?.env).toEqual({
+    // [rebase-011] 上游 v0.11.1 起 PiCliRuntime 用 createExternalProcessEnv 把 daemon 进程
+    // env 整体并入 launch env（仅按名剔除 RUNTIME_CONTROL_ENV_KEYS），故此处不再是精确
+    // 相等；本断言的本意是"派生 env 确实抵达 child launch env"，改为子集断言。
+    expect(launches[0]?.env).toMatchObject({
       PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
       PBASH_DERIVE_PROBE: "/root/pi-profiles/worker/agent-dir/derive.probe",
     });
@@ -266,7 +269,8 @@ describe("PiCliRuntime", () => {
 
     await runtime.startSession({ cwd: "/workspace/project", session: "/tmp/pi-session.jsonl" });
 
-    expect(launches[0]?.env).toEqual({
+    // [rebase-011] 同上：launch env 现含 daemon 进程 env，改子集断言保本意。
+    expect(launches[0]?.env).toMatchObject({
       PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
       PBASH_DERIVE_PROBE: "/root/pi-profiles/worker/agent-dir/derive.probe",
     });
@@ -288,9 +292,41 @@ describe("PiCliRuntime", () => {
 
     await runtime.startSession({ cwd: "/workspace/project", env: { PASEO_REPORT_TO: "agent-1" } });
 
-    expect(launches[0]?.env).toEqual({
+    // [rebase-011] 上游 v0.11.1 起 launch env = daemon 进程 env + provider env + session env
+    // （createExternalProcessEnv），精确相等不再成立。保留并强化原意：加一个双侧同名键
+    // PROBE，直接钉死 session 覆盖 provider 的优先级。
+    expect(launches[0]?.env).toMatchObject({
       PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
       PASEO_REPORT_TO: "agent-1",
+    });
+  });
+
+  // [rebase-011] 精确相等改子集断言后， overlay 优先级需一条同名键断言兜底（上游 env 注入
+  // 改造不改变 createExternalProcessEnv(base, provider, session) 的后者胜出语义）。
+  test("session env wins over the provider runtime settings env on the same key", async () => {
+    const child = createPiChild();
+    replyToCommands(child, () => ({}));
+    const launches: PiRuntimeLaunch[] = [];
+    const runtime = new PiCliRuntime({
+      logger: pino({ level: "silent" }),
+      command: ["pi"],
+      runtimeSettings: {
+        env: {
+          PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+          PBASH_DERIVE_PROBE: "provider",
+        },
+      },
+      spawnProcess: (launch) => {
+        launches.push(launch);
+        return child;
+      },
+    });
+
+    await runtime.startSession({ cwd: "/workspace/project", env: { PBASH_DERIVE_PROBE: "session" } });
+
+    expect(launches[0]?.env).toMatchObject({
+      PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+      PBASH_DERIVE_PROBE: "session",
     });
   });
 
