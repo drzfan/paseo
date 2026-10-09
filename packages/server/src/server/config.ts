@@ -19,6 +19,13 @@ import type {
   ProviderOverride,
 } from "./agent/provider-launch-config.js";
 import { ProviderOverrideSchema } from "./agent/provider-launch-config.js";
+import {
+  DEFAULT_PROFILES_DIR,
+  deriveProfileProviders,
+  mergeDerivedProviderOverrides,
+  type DerivedProviderEntry,
+  type DeriveFailure,
+} from "./profile-provider-deriver.js";
 import { AgentProviderSchema } from "@getpaseo/protocol/provider-manifest";
 import { hashDaemonPassword } from "./auth.js";
 import { resolveSpeechConfig } from "./speech/speech-config-resolver.js";
@@ -228,6 +235,22 @@ function extractProviderOverrides(
   });
 
   return providerOverrides.length > 0 ? Object.fromEntries(providerOverrides) : undefined;
+}
+
+interface ResolveProfileDerivationResult {
+  profilesDir: string;
+  derived: Map<string, DerivedProviderEntry>;
+  failures: readonly DeriveFailure[];
+}
+
+/**
+ * Resolve the directory-derived provider layer for a persisted config. Never throws:
+ * an unreadable or empty profiles tree simply yields no derived providers.
+ */
+function resolveProfileDerivation(persisted: PersistedConfig): ResolveProfileDerivationResult {
+  const profilesDir = persisted.agents?.profileDerivation?.profilesDir ?? DEFAULT_PROFILES_DIR;
+  const result = deriveProfileProviders({ profilesDir });
+  return { profilesDir, derived: result.derived, failures: result.failures };
 }
 
 function extractAgentProviderSettings(
@@ -610,9 +633,16 @@ export function resolveConfigFromPersisted(
   });
 
   const voiceLlm = resolveVoiceLlmConfig(env, persisted);
-  const providerOverrides = extractProviderOverrides(
+  const staticProviderOverrides = extractProviderOverrides(
     persisted.agents?.providers as Record<string, unknown> | undefined,
   );
+  // Directory-derived providers (spec §1.2 / §2.1). Static declarations win, so the
+  // hand-written `agents.providers` section keeps overriding a derived entry.
+  const profileDerivation = resolveProfileDerivation(persisted);
+  const providerOverrides =
+    staticProviderOverrides || profileDerivation.derived.size > 0
+      ? mergeDerivedProviderOverrides(staticProviderOverrides ?? {}, profileDerivation.derived)
+      : undefined;
 
   const overrideControlledPaths = resolveOverrideControlledPaths(env, cli, speech.providers);
 
@@ -660,6 +690,10 @@ export function resolveConfigFromPersisted(
     voiceLlmProviderExplicit: voiceLlm.providerExplicit,
     voiceLlmModel: voiceLlm.model,
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
+    profileDerivation: {
+      profilesDir: profileDerivation.profilesDir,
+      failures: profileDerivation.failures,
+    },
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     metadataGeneration: persisted.agents?.metadataGeneration,
     providerOverrides,

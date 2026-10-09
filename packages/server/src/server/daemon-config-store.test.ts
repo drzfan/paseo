@@ -23,6 +23,7 @@ function reloadableConfig(
     mcp: { enabled: true, injectIntoAgents: false },
     browserTools: { enabled: daemon.browserTools?.enabled ?? false },
     providers: (agents.providers ?? {}) as MutableDaemonConfig["providers"],
+    profileDerivation: agents.profileDerivation,
     metadataGeneration: { providers: agents.metadataGeneration?.providers ?? [] },
     autoArchiveAfterMerge: daemon.autoArchiveAfterMerge ?? false,
     enableTerminalAgentHooks: daemon.enableTerminalAgentHooks ?? false,
@@ -943,6 +944,116 @@ describe("DaemonConfigStore", () => {
   });
 });
 
+describe("DaemonConfigStore derived-provider persistence guard", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function createStore(options: { derived?: string[]; persisted?: PersistedConfig } = {}) {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-derived-"));
+    tempDirs.push(paseoHome);
+    if (options.persisted) {
+      writeFileSync(
+        path.join(paseoHome, "config.json"),
+        `${JSON.stringify(options.persisted, null, 2)}\n`,
+      );
+    }
+    const store = new DaemonConfigStore(
+      paseoHome,
+      {
+        mcp: { injectIntoAgents: false },
+        browserTools: { enabled: false },
+        providers: {
+          "paseo-worker": {
+            extends: "pi",
+            label: "worker (paseo-profile)",
+            env: { PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir" },
+          },
+          ...(options.derived
+            ? Object.fromEntries(
+                options.derived.map((name) => [
+                  name,
+                  { extends: "pi", label: `${name} (paseo-profile)`, env: { DERIVED: "1" } },
+                ]),
+              )
+            : {}),
+        },
+        autoArchiveAfterMerge: false,
+        enableTerminalAgentHooks: false,
+        appendSystemPrompt: "",
+        metadataGeneration: { providers: [] },
+      },
+      undefined,
+      { derivedProviderNames: () => options.derived ?? ["paseo-worker"] },
+    );
+    return { paseoHome, store };
+  }
+
+  test("a patch cannot write a derived provider snapshot into config.json", () => {
+    const { paseoHome, store } = createStore({ derived: ["paseo-worker", "paseo-tester"] });
+
+    store.patch({
+      providers: {
+        "paseo-tester": {
+          extends: "pi",
+          label: "tester (paseo-profile)",
+          env: { PI_CODING_AGENT_DIR: "/root/pi-profiles/tester/agent-dir" },
+        },
+      },
+    });
+
+    const persisted = loadPersistedConfig(paseoHome);
+    expect(persisted.agents?.providers?.["paseo-tester"]).toBeUndefined();
+    expect(persisted.agents?.providers?.["paseo-worker"]).toBeUndefined();
+    // The live config keeps the derived declaration so the daemon can still use it.
+    expect(store.get().providers["paseo-tester"]).toMatchObject({ extends: "pi" });
+  });
+
+  test("a hand-written provider that shares a derived name stays writable", () => {
+    const { paseoHome, store } = createStore({
+      derived: ["paseo-worker"],
+      persisted: {
+        version: 1,
+        agents: {
+          providers: {
+            "paseo-worker": {
+              extends: "pi",
+              label: "worker (paseo-profile)",
+              env: { PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir" },
+            },
+          },
+        },
+      } as PersistedConfig,
+    });
+
+    store.patch({
+      providers: {
+        "paseo-worker": { enabled: false },
+      },
+    });
+
+    const persisted = loadPersistedConfig(paseoHome);
+    expect(persisted.agents?.providers?.["paseo-worker"]).toMatchObject({
+      extends: "pi",
+      enabled: false,
+    });
+  });
+
+  test("removing a derived provider does not rewrite the static section", () => {
+    const { paseoHome, store } = createStore({ derived: ["paseo-tester"] });
+
+    store.patch({ removeProviders: ["paseo-tester"] });
+
+    const persisted = loadPersistedConfig(paseoHome);
+    expect(persisted.agents?.providers?.["paseo-tester"]).toBeUndefined();
+    expect(store.get().providers["paseo-tester"]).toBeUndefined();
+  });
+});
+
 describe("DaemonConfigStore reload", () => {
   const tempDirs: string[] = [];
 
@@ -1146,6 +1257,7 @@ describe("DaemonConfigStore reload", () => {
     const result = store.reload();
 
     expect(result.appliedPaths).toEqual([
+      "agents.profileDerivation",
       "agents.providers",
       "daemon.agentProfiles",
       "daemon.terminalProfiles",
@@ -1220,5 +1332,28 @@ describe("DaemonConfigStore reload", () => {
       restartRequiredPaths: [],
       overrideControlledPaths: [],
     });
+  });
+
+  test("applies a profiles-directory change without a restart", () => {
+    const { paseoHome, store, persisted } = createReloadableStore({
+      initialPersisted: {
+        version: 1,
+        agents: { profileDerivation: { profilesDir: "/root/pi-profiles" } },
+      } as PersistedConfig,
+    });
+
+    expect(store.get().profileDerivation).toEqual({ profilesDir: "/root/pi-profiles" });
+
+    writeConfig(paseoHome, {
+      ...persisted,
+      agents: { profileDerivation: { profilesDir: "/root/pi-profiles-test" } },
+    });
+
+    expect(store.reload()).toEqual({
+      appliedPaths: ["agents.profileDerivation"],
+      restartRequiredPaths: [],
+      overrideControlledPaths: [],
+    });
+    expect(store.get().profileDerivation).toEqual({ profilesDir: "/root/pi-profiles-test" });
   });
 });
