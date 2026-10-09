@@ -215,3 +215,112 @@ test("loads private plugin registry settings through the configuration boundary"
     await rm(home, { recursive: true, force: true });
   }
 });
+
+describe("directory-derived providers", () => {
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  async function createProfilesTree(roles: string[]): Promise<string> {
+    const profilesDir = await mkdtemp(path.join(os.tmpdir(), "paseo-config-profiles-"));
+    roots.push(profilesDir);
+    for (const role of roles) {
+      await mkdir(path.join(profilesDir, role, "agent-dir"), { recursive: true });
+      await writeFile(
+        path.join(profilesDir, role, "profile.json"),
+        JSON.stringify({ profile: role, env: { PROBE_KEY: `=agentDir/${role}.probe` } }),
+      );
+    }
+    return profilesDir;
+  }
+
+  async function createHome(config: Record<string, unknown>): Promise<string> {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-config-derived-"));
+    roots.push(paseoHome);
+    await writeFile(path.join(paseoHome, "config.json"), JSON.stringify(config));
+    return paseoHome;
+  }
+
+  test("derives providers from the configured profiles directory", async () => {
+    const profilesDir = await createProfilesTree(["worker", "tester"]);
+    const paseoHome = await createHome({
+      agents: { profileDerivation: { profilesDir } },
+    });
+
+    const config = loadConfig(paseoHome, { env: {} });
+
+    expect(config.profileDerivation).toEqual({ profilesDir, failures: [] });
+    expect(config.providerOverrides).toEqual({
+      "paseo-worker": {
+        extends: "pi",
+        label: "worker (paseo-profile)",
+        env: {
+          PI_CODING_AGENT_DIR: path.join(profilesDir, "worker", "agent-dir"),
+          PROBE_KEY: path.join(profilesDir, "worker", "agent-dir", "worker.probe"),
+        },
+      },
+      "paseo-tester": {
+        extends: "pi",
+        label: "tester (paseo-profile)",
+        env: {
+          PI_CODING_AGENT_DIR: path.join(profilesDir, "tester", "agent-dir"),
+          PROBE_KEY: path.join(profilesDir, "tester", "agent-dir", "tester.probe"),
+        },
+      },
+    });
+    expect(Object.keys(config.agentProviderSettings ?? {}).sort()).toEqual([
+      "paseo-tester",
+      "paseo-worker",
+    ]);
+    // The derived declarations are never written back to the persisted config.
+    expect((await loadPersistedConfig(paseoHome)).agents?.providers).toBeUndefined();
+  });
+
+  test("a hand-written provider overrides the derived one", async () => {
+    const profilesDir = await createProfilesTree(["worker"]);
+    const paseoHome = await createHome({
+      agents: {
+        profileDerivation: { profilesDir },
+        providers: {
+          "paseo-worker": {
+            extends: "pi",
+            label: "worker (paseo-profile)",
+            env: { PI_CODING_AGENT_DIR: "/somewhere/else" },
+          },
+        },
+      },
+    });
+
+    const config = loadConfig(paseoHome, { env: {} });
+
+    expect(config.providerOverrides?.["paseo-worker"]?.env).toEqual({
+      PI_CODING_AGENT_DIR: "/somewhere/else",
+    });
+  });
+
+  test("defaults to the standard profiles tree when the section is absent", async () => {
+    const paseoHome = await createHome({});
+
+    const config = loadConfig(paseoHome, { env: {} });
+
+    expect(config.profileDerivation?.profilesDir).toBe("/root/pi-profiles");
+    expect(Object.keys(config.providerOverrides ?? {})).toContain("paseo-worker");
+  });
+
+  test("reports broken roles without failing the load", async () => {
+    const profilesDir = await mkdtemp(path.join(os.tmpdir(), "paseo-config-profiles-broken-"));
+    roots.push(profilesDir);
+    await mkdir(path.join(profilesDir, "worker", "agent-dir"), { recursive: true });
+    await writeFile(path.join(profilesDir, "worker", "profile.json"), "{ not json");
+    const paseoHome = await createHome({ agents: { profileDerivation: { profilesDir } } });
+
+    const config = loadConfig(paseoHome, { env: {} });
+
+    expect(config.providerOverrides).toBeUndefined();
+    expect(config.profileDerivation?.failures).toHaveLength(1);
+    expect(config.profileDerivation?.failures[0]).toMatchObject({
+      role: "worker",
+      code: "bad_profile_json",
+    });
+  });
+});

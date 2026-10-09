@@ -215,6 +215,85 @@ describe("PiCliRuntime", () => {
     ]);
   });
 
+  // Ticket 02 (B2): the directory-derived provider env reaches the child process
+  // through the provider runtime settings — the same overlay the spawn turns into the
+  // child environment (jsonl-rpc-process envOverlay).
+  test("forwards provider runtime settings env to the Pi launch", async () => {
+    const child = createPiChild();
+    replyToCommands(child, () => ({}));
+    const launches: PiRuntimeLaunch[] = [];
+    const runtime = new PiCliRuntime({
+      logger: pino({ level: "silent" }),
+      command: ["pi"],
+      runtimeSettings: {
+        env: {
+          PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+          PBASH_DERIVE_PROBE: "/root/pi-profiles/worker/agent-dir/derive.probe",
+        },
+      },
+      spawnProcess: (launch) => {
+        launches.push(launch);
+        return child;
+      },
+    });
+
+    await runtime.startSession({ cwd: "/workspace/project" });
+
+    expect(launches[0]?.env).toEqual({
+      PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+      PBASH_DERIVE_PROBE: "/root/pi-profiles/worker/agent-dir/derive.probe",
+    });
+  });
+
+  test("keeps provider runtime settings env across a resume", async () => {
+    const child = createPiChild();
+    replyToCommands(child, () => ({}));
+    const launches: PiRuntimeLaunch[] = [];
+    const runtime = new PiCliRuntime({
+      logger: pino({ level: "silent" }),
+      command: ["pi"],
+      runtimeSettings: {
+        env: {
+          PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+          PBASH_DERIVE_PROBE: "/root/pi-profiles/worker/agent-dir/derive.probe",
+        },
+      },
+      spawnProcess: (launch) => {
+        launches.push(launch);
+        return child;
+      },
+    });
+
+    await runtime.startSession({ cwd: "/workspace/project", session: "/tmp/pi-session.jsonl" });
+
+    expect(launches[0]?.env).toEqual({
+      PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+      PBASH_DERIVE_PROBE: "/root/pi-profiles/worker/agent-dir/derive.probe",
+    });
+  });
+
+  test("session env overlays the provider runtime settings env", async () => {
+    const child = createPiChild();
+    replyToCommands(child, () => ({}));
+    const launches: PiRuntimeLaunch[] = [];
+    const runtime = new PiCliRuntime({
+      logger: pino({ level: "silent" }),
+      command: ["pi"],
+      runtimeSettings: { env: { PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir" } },
+      spawnProcess: (launch) => {
+        launches.push(launch);
+        return child;
+      },
+    });
+
+    await runtime.startSession({ cwd: "/workspace/project", env: { PASEO_REPORT_TO: "agent-1" } });
+
+    expect(launches[0]?.env).toEqual({
+      PI_CODING_AGENT_DIR: "/root/pi-profiles/worker/agent-dir",
+      PASEO_REPORT_TO: "agent-1",
+    });
+  });
+
   test("does not append rpc mode when the configured command already includes a mode flag", async () => {
     const child = createPiChild();
     replyToCommands(child, () => ({}));
