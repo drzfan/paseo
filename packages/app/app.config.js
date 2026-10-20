@@ -81,7 +81,7 @@ const variants = {
     }),
   },
   development: {
-    name: "Paseo Debug",
+    name: "Paseo Pheme",
     packageId: "sh.paseo.debug",
     googleServicesFile: resolveSecretFile({
       envKey: "GOOGLE_SERVICES_FILE_DEBUG",
