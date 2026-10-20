@@ -74,6 +74,24 @@ jobs:
             packages/expo-two-way-audio/node_modules/expo-module-scripts
           ls -l packages/expo-two-way-audio/node_modules/expo-module-scripts
 
+      # bun 默认不跑第三方依赖的 postinstall（trustedDependencies 白名单语义），而 packages/app 显式 opt-in 了
+      # code highlight（package.json 的 "enriched-markdown".enableCodeHighlight=true）——
+      # 缺 tree-sitter 语法源码时 gradle 在 react-native-enriched-markdown/android/build.gradle:146 直接 throw
+      # （首轮 run 39409293946 的定谳："code highlighting is enabled but the tree-sitter grammars are not installed"）。
+      # 处理：显式跑它自带的 postinstall（从 registry.npmjs.org + github.com 拉语法源码），并用 .stamp 断言兜底——
+      # 缺资产在这里红，而不是 3 分钟后在 gradle 里红（定谳成本前置）。
+      # INIT_CWD 决定 consumer 配置查找入口：指仓根 → 走 workspace 成员（packages/app）→ enableMath=false，跳过 iOS RaTeX 下载。
+      - name: Vendor enriched-markdown native assets (tree-sitter grammars)
+        run: |
+          set -euo pipefail
+          INIT_CWD="$PWD" node node_modules/react-native-enriched-markdown/postinstall.mjs
+          vendor_dir=node_modules/react-native-enriched-markdown/cpp/highlight/vendor
+          test -f "${vendor_dir}/grammars/.stamp" || {
+            echo "::error::tree-sitter 语法 .stamp 缺失——下载失败（查 registry.npmjs.org / github.com 连通性）"
+            exit 1
+          }
+          du -sh "${vendor_dir}"
+
       # 必须 `npm run`：bun run 会把 `--workspace=X` 展开成超长命令行 → E2BIG（pitfalls-foreman）。
       # npm 这里只跑 script、不碰 lockfile，不属于混装。
       - name: Build app dependencies
