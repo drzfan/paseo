@@ -157,34 +157,81 @@ jobs:
           echo "--- installed SDK packages ---"
           sdkmanager --list_installed | sed -n '1,30p'
 
-      # ---- 签名（票 03，零 secrets 红线不变）-----------------------------------
-      # CI 里 keytool 现生成 keystore，直接**落在 prebuild 产物自己的 signingConfigs.debug 位置**
-      # （android/app/debug.keystore，alias/口令与模板一致：androiddebugkey / android）。
-      # 实据：generated app/build.gradle:100-115 —— debug 与 release 两个 buildType 都 `signingConfig signingConfigs.debug`，
-      # 所以 assembleRelease 会用这把新 key 签名 → 产物天然可安装。
-      # 为什么不是「gradle 出包后再 apksigner sign」：gradle 产出的 release APK 已带 debug 签名，
-      # 对已签名 APK 二次 sign 的语义不稳（可能需先剥 Sig Block）；
-      # 「keytool 现生成 → AGP 用这把 key 签 → apksigner verify 准死门禁 → 证书指纹与生成值比对」
-      # 是同等目的且更死的姿势（票面允许「或等价姿势」）。
-      - name: Generate CI keystore and inject as release signing key
+      # ---- 签名（票 04：GHA secret 驱动固定 keystore，跨 run 同证书）---------------
+      # 目标：相邻两轮 run 用同一把 key 签 → `adb install -r` 覆盖升级必然成功。
+      # 约定（与总管侧对齐）：secret 本体是 PKCS12，storepass/keypass/alias 均为 paseo-dev，dname "CN=Paseo Debug"；
+      # 密码/alias 只是 keytool 形式要求，故按常量引用，不另设 secret。
+      #
+      # 落地姿势：解码 secret → `importkeystore` **对齐到 generated build.gradle 的 signingConfigs.debug 常量**
+      # （alias androiddebugkey / storepass+keypass android）→ 复用 03 的链：release 也是 `signingConfig signingConfigs.debug`，
+      # AGP 直接用这把 key 签（实据 app/build.gradle:100-115）。
+      # 为何对齐 keystore 而不 sed 改 build.gradle：android/ 是 prebuild 生成物，改生成物比换 keystore 口令更脆。
+      # 为何不是出包后 `apksigner sign`：gradle 产物已带签名，二次签名语义不稳（需先剥 Sig Block）。
+      # 回退：secret 缺失 → 现生成临时 keystore + ::warning + summary 标 UNSTABLE-SIGNING（管线不死）。
+      - name: Materialize signing keystore (secret-driven, ephemeral fallback)
+        env:
+          PASEO_DEBUG_KEYSTORE_BASE64: ${{ secrets.PASEO_DEBUG_KEYSTORE_BASE64 }}
+          SECRET_STOREPASS: paseo-dev
+          SECRET_ALIAS: paseo-dev
         run: |
           set -euo pipefail
           KS=packages/app/android/app/debug.keystore
-          # prebuild 已落地一个模板 debug.keystore（alias androiddebugkey 已存在）——
-          # 不删的话 keytool 会以 "alias already exists" 报错（而不是覆盖）。
+          # prebuild 已落地模板 debug.keystore（alias androiddebugkey 已存在）——不删则 importkeystore/keytool 撞 alias
           rm -f "$KS"
-          keytool -genkeypair -v -storetype PKCS12 -keystore "$KS" \
-            -storepass android -keypass android -alias androiddebugkey \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=paseo-dev-apk, OU=imesend, O=paseo, C=US" >/dev/null
-          # 导出证书 SHA-256，供签名校验步骤比对（防「注入被静默忽略」）
+          if [ -n "${PASEO_DEBUG_KEYSTORE_BASE64:-}" ]; then
+            SRC="$RUNNER_TEMP/paseo-debug.p12"
+            printf '%s' "$PASEO_DEBUG_KEYSTORE_BASE64" | base64 -d > "$SRC"
+            test -s "$SRC" || { echo "::error::secret 解码后为空文件"; exit 1; }
+            # 自证 + 取实际 alias：secret 是 openssl 导出的 PKCS12（VPS 无 keytool），
+            # 约定 alias=paseo-dev 不保证一定被写进 friendlyName → 按实际条目走，只把差异 warning 出来。
+            # 口令错 / 内容不是 keystore（无 PrivateKeyEntry）→ 下面 fail loud，绝不静默走回退。
+            ACTUAL_ALIAS=$(keytool -list -keystore "$SRC" -storepass "$SECRET_STOREPASS" 2>/dev/null \
+              | awk -F, '/PrivateKeyEntry/{print $1; exit}' | sed 's/[[:space:]]*$//' || true)
+            if [ -z "$ACTUAL_ALIAS" ]; then
+              echo "::error::secret keystore 里没读到 PrivateKeyEntry（口令与约定 '$SECRET_STOREPASS' 不符，或内容不是 keystore）——下面是全部条目供定谳："
+              keytool -list -keystore "$SRC" -storepass "$SECRET_STOREPASS" || true
+              exit 1
+            fi
+            if [ "$ACTUAL_ALIAS" != "$SECRET_ALIAS" ]; then
+              echo "::warning::secret keystore 实际 alias='$ACTUAL_ALIAS'（约定 '$SECRET_ALIAS'）——按实际 alias 继续（签名的 key 材质不受 alias 影响）"
+            fi
+            keytool -importkeystore \
+              -srckeystore "$SRC" -srcstoretype PKCS12 \
+              -srcstorepass "$SECRET_STOREPASS" -srcalias "$ACTUAL_ALIAS" \
+              -destkeystore "$KS" -deststoretype PKCS12 \
+              -deststorepass android -destkeypass android \
+              -destalias androiddebugkey -noprompt >/dev/null
+            SIGNING_MODE=stable
+            echo "签名模式：stable（PASEO_DEBUG_KEYSTORE_BASE64 注入，跨 run 证书固定）"
+          else
+            echo "::warning title=UNSTABLE-SIGNING::PASEO_DEBUG_KEYSTORE_BASE64 未配置 → 本轮现生成临时 keystore：跨 run 证书不同，adb install -r 覆盖升级会失败"
+            keytool -genkeypair -storetype PKCS12 -keystore "$KS" \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=paseo-dev-apk, OU=imesend, O=paseo, C=US" >/dev/null
+            SIGNING_MODE=unstable
+            echo "签名模式：unstable（secret 缺失，临时 keystore）"
+          fi
+          # 导出证书 SHA-256：既是 verify 步骤的比对目标（防注入被静默忽略），也是跨 run 比对证据
           FP=$(keytool -exportcert -keystore "$KS" -storepass android -alias androiddebugkey -rfc \
                 | openssl x509 -inform PEM -fingerprint -sha256 -noout \
                 | sed 's/.*=//; s/://g' | tr 'A-Z' 'a-z')
-          test -n "$FP" || { echo "::error::无法从生成的 keystore 读出证书指纹"; exit 1; }
+          test -n "$FP" || { echo "::error::无法读出签名证书指纹"; exit 1; }
           echo "keystore: $KS"
-          echo "证书 SHA-256: $FP"
+          echo "签名证书 SHA-256: $FP"
           echo "EXPECTED_CERT_SHA256=$FP" >> "$GITHUB_ENV"
+          echo "SIGNING_MODE=$SIGNING_MODE" >> "$GITHUB_ENV"
+          {
+            echo ""
+            echo "### 签名（票 04）"
+            echo ""
+            if [ "$SIGNING_MODE" = "stable" ]; then
+              echo "- 模式：**stable**（secret 驱动，相邻 run 证书应逐字相同）"
+            else
+              echo "- 模式：**⚠️ UNSTABLE-SIGNING**（secret 缺失，临时 keystore；覆盖安装会因签名不一致失败）"
+            fi
+            echo "- 签名证书 SHA-256：\`$FP\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # assembleRelease（票 03）：release 会跑 bundleReleaseJsAndAssets 把 JS 打进 APK
       # （hermesEnabled=true → 产物是 Hermes 字节码）；debug 构建则完全不打 bundle，只在运行时向 Metro 要 JS。
@@ -207,8 +254,8 @@ jobs:
             echo "::error::没找到 release APK（app/build/outputs/apk/release/*.apk）"
             exit 1
           fi
-          echo '| APK | Signer DN | 证书 SHA-256 | verify |' >> "$GITHUB_STEP_SUMMARY"
-          echo '|---|---|---|---|' >> "$GITHUB_STEP_SUMMARY"
+          echo '| APK | Signer DN | 证书 SHA-256 | 签名模式 | verify |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|---|---|---|---|---|' >> "$GITHUB_STEP_SUMMARY"
           for apk in "${apks[@]}"; do
             echo "=== $apk"
             "$APKSIGNER" verify -v --print-certs "$apk" > $RUNNER_TEMP/apksig.txt
@@ -224,8 +271,8 @@ jobs:
               echo "::error::APK 签名证书与 CI 现生成的 keystore 不一致（got=$GOT want=$WANT）——注入被忽略或签名回退"
               exit 1
             fi
-            echo "✅ 签名校验通过（证书与 CI 生成的 keystore 一致）"
-            echo "| $(basename "$apk") | $DN | $GOT | pass |" >> "$GITHUB_STEP_SUMMARY"
+            echo "✅ 签名校验通过（证书与 CI 侧 keystore 一致；模式=${SIGNING_MODE}）"
+            echo "| $(basename "$apk") | $DN | $GOT | ${SIGNING_MODE} | pass |" >> "$GITHUB_STEP_SUMMARY"
           done
 
       # 独立运行断言（票 03 新 AC，本质修复用户报告的「dev client 壳」问题）：
