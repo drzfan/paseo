@@ -310,11 +310,18 @@ jobs:
                       failures.append(f"{apk.name}: AndroidManifest 里没找到包名 sh.paseo.debug")
                   else:
                       print("  包名: sh.paseo.debug ✓")
+                  # 票 05：显示名断言。实测上一轮产物：“Paseo Debug” 只出现在 resources.arsc（UTF-8 字符串池），
+                  # AndroidManifest 里只是 @string/app_name 引用 —— 所以必须查 arsc，两种编码都试。
+                  arsc = z.read("resources.arsc") if "resources.arsc" in names else b""
+                  if any("Paseo Pheme".encode(enc) in arsc for enc in ("utf-8", "utf-16-le")):
+                      print("  显示名: Paseo Pheme ✓")
+                  else:
+                      failures.append(f"{apk.name}: resources.arsc 里没找到应用显示名 'Paseo Pheme'")
           if failures:
               for f in failures:
                   print(f"::error::{f}")
               sys.exit(1)
-          print("✅ 独立运行断言通过：JS 已内嵌（assets/index.android.bundle），包名 sh.paseo.debug")
+          print("✅ 独立运行断言通过：JS 已内嵌（assets/index.android.bundle），包名 sh.paseo.debug，显示名 Paseo Pheme")
           PY
 
       # 单 ABI 断言（票 02 军令，票 03 保留）：解包看 APK 的 lib/ 下只有 arm64-v8a 一个 ABI 目录，
