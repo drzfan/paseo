@@ -1,11 +1,13 @@
 name: Android Dev APK (local prebuild + gradle)
 
-# imesend 战役票 02：GHA 本地 prebuild + gradle assembleDebug 出 dev APK（路 B，零 secrets）。
+# imesend 战役票 02 → 票 03：GHA 本地 prebuild + gradle 出 dev 变体测试包（零 secrets）。
+#   票 02：assembleDebug —— 真机验收发现产物是 **dev client 壳**（Expo launcher 等 Metro 喂 JS，无 Metro 不可用）。
+#   票 03：改 assembleRelease —— JS 内嵌进 APK，独立可装可跑；包名仍 sh.paseo.debug（APP_VARIANT=development 不变），与正式版共存。
 #
 # 与 android-apk-release.yml 的分工（勿混）：
 #   上游 android-apk-release.yml 是 **EAS 云构建调度器**（workflow 只调 `eas build` + 传产物），
 #   不是本地构建模板——本文件不抄它、也不改它。
-#   本文件只服务 imesend 分支上的 dev 包自测，不碰任何上游 workflow。
+#   本文件只服务 imesend 分支上的测试包，不碰任何上游 workflow。
 #
 # 纪律出处：docs/android-build-lessons.md（红了禁取消重跑；每红拉 log 定谳；
 # 同类失败第二次必须变自动化防线）、.scratch/imesend/pitfalls-foreman.md（bun/npm 分界与缓存污染）。
@@ -155,22 +157,128 @@ jobs:
           echo "--- installed SDK packages ---"
           sdkmanager --list_installed | sed -n '1,30p'
 
-      - name: Build debug APK (arm64-v8a only)
+      # ---- 签名（票 03，零 secrets 红线不变）-----------------------------------
+      # CI 里 keytool 现生成 keystore，直接**落在 prebuild 产物自己的 signingConfigs.debug 位置**
+      # （android/app/debug.keystore，alias/口令与模板一致：androiddebugkey / android）。
+      # 实据：generated app/build.gradle:100-115 —— debug 与 release 两个 buildType 都 `signingConfig signingConfigs.debug`，
+      # 所以 assembleRelease 会用这把新 key 签名 → 产物天然可安装。
+      # 为什么不是「gradle 出包后再 apksigner sign」：gradle 产出的 release APK 已带 debug 签名，
+      # 对已签名 APK 二次 sign 的语义不稳（可能需先剥 Sig Block）；
+      # 「keytool 现生成 → AGP 用这把 key 签 → apksigner verify 准死门禁 → 证书指纹与生成值比对」
+      # 是同等目的且更死的姿势（票面允许「或等价姿势」）。
+      - name: Generate CI keystore and inject as release signing key
+        run: |
+          set -euo pipefail
+          KS=packages/app/android/app/debug.keystore
+          # prebuild 已落地一个模板 debug.keystore（alias androiddebugkey 已存在）——
+          # 不删的话 keytool 会以 "alias already exists" 报错（而不是覆盖）。
+          rm -f "$KS"
+          keytool -genkeypair -v -storetype PKCS12 -keystore "$KS" \
+            -storepass android -keypass android -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=paseo-dev-apk, OU=imesend, O=paseo, C=US" >/dev/null
+          # 导出证书 SHA-256，供签名校验步骤比对（防「注入被静默忽略」）
+          FP=$(keytool -exportcert -keystore "$KS" -storepass android -alias androiddebugkey -rfc \
+                | openssl x509 -inform PEM -fingerprint -sha256 -noout \
+                | sed 's/.*=//; s/://g' | tr 'A-Z' 'a-z')
+          test -n "$FP" || { echo "::error::无法从生成的 keystore 读出证书指纹"; exit 1; }
+          echo "keystore: $KS"
+          echo "证书 SHA-256: $FP"
+          echo "EXPECTED_CERT_SHA256=$FP" >> "$GITHUB_ENV"
+
+      # assembleRelease（票 03）：release 会跑 bundleReleaseJsAndAssets 把 JS 打进 APK
+      # （hermesEnabled=true → 产物是 Hermes 字节码）；debug 构建则完全不打 bundle，只在运行时向 Metro 要 JS。
+      - name: Build release APK (arm64-v8a only)
         working-directory: packages/app/android
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon -PreactNativeArchitectures=arm64-v8a
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
 
-      # 单 ABI 断言（票面 AC）：解包看 APK 的 lib/ 下只有 arm64-v8a 一个 ABI 目录，
+      # 签名门禁（票 03 AC，必跑）：apksigner verify + 证书指纹与 CI 现生成值逐字比对。
+      - name: Verify APK signature (apksigner)
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
+          echo "apksigner: $APKSIGNER"
+          shopt -s nullglob
+          apks=(packages/app/android/app/build/outputs/apk/release/*.apk)
+          if [ ${#apks[@]} -eq 0 ]; then
+            echo "::error::没找到 release APK（app/build/outputs/apk/release/*.apk）"
+            exit 1
+          fi
+          echo '| APK | Signer DN | 证书 SHA-256 | verify |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|---|---|---|---|' >> "$GITHUB_STEP_SUMMARY"
+          for apk in "${apks[@]}"; do
+            echo "=== $apk"
+            "$APKSIGNER" verify -v --print-certs "$apk" > $RUNNER_TEMP/apksig.txt
+            cat $RUNNER_TEMP/apksig.txt
+            DN=$("$APKSIGNER" verify --print-certs "$apk" | awk -F': ' '/certificate DN/{print $NF; exit}')
+            GOT=$("$APKSIGNER" verify --print-certs "$apk" | awk -F': ' '/certificate SHA-256 digest/{print $NF; exit}' | tr -d ':' | tr 'A-Z' 'a-z')
+            WANT=$(echo "$EXPECTED_CERT_SHA256" | tr -d ':' | tr 'A-Z' 'a-z')
+            if [ -z "$GOT" ]; then
+              echo "::error::apksigner 没读到证书指纹（APK 可能未签名）"
+              exit 1
+            fi
+            if [ "$GOT" != "$WANT" ]; then
+              echo "::error::APK 签名证书与 CI 现生成的 keystore 不一致（got=$GOT want=$WANT）——注入被忽略或签名回退"
+              exit 1
+            fi
+            echo "✅ 签名校验通过（证书与 CI 生成的 keystore 一致）"
+            echo "| $(basename "$apk") | $DN | $GOT | pass |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      # 独立运行断言（票 03 新 AC，本质修复用户报告的「dev client 壳」问题）：
+      # release 包必须把 JS 打进 APK（assets/index.android.bundle），否则真机上只能弹 Expo launcher 等 Metro。
+      # 顺带在同一份解包里断言包名仍为 sh.paseo.debug（与正式版共存）。
+      - name: Assert standalone JS bundle embedded (not a dev-client shell)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, sys, zipfile
+
+          HBC_MAGIC = bytes([0xC6, 0x1F, 0xBC, 0x03, 0xC1, 0x03, 0x19, 0x1F])
+          MIN_BUNDLE_BYTES = 1_000_000
+          apks = sorted(pathlib.Path("packages/app/android/app/build/outputs/apk/release").glob("*.apk"))
+          if not apks:
+              sys.exit("::error::没找到 release APK")
+          failures = []
+          for apk in apks:
+              with zipfile.ZipFile(apk) as z:
+                  names = z.namelist()
+                  bundles = [n for n in names if n.endswith("index.android.bundle")]
+                  print(f"== {apk} ({apk.stat().st_size/1048576:.1f} MB)")
+                  if not bundles:
+                      failures.append(f"{apk.name}: 没有 assets/index.android.bundle —— 这是 dev client 壳，真机无 Metro 不可用")
+                      print("  assets/ 条目示例:", [n for n in names if n.startswith("assets/")][:10])
+                      continue
+                  for name in bundles:
+                      data = z.read(name)
+                      print(f"  {name}: {len(data)/1048576:.2f} MB")
+                      if len(data) < MIN_BUNDLE_BYTES:
+                          failures.append(f"{apk.name}:{name} 只有 {len(data)} 字节，不像是完整 JS bundle")
+                      print("  Hermes 字节码魔数匹配:", data[:8] == HBC_MAGIC)
+                  manifest = z.read("AndroidManifest.xml")
+                  if "sh.paseo.debug".encode("utf-16-le") not in manifest:
+                      failures.append(f"{apk.name}: AndroidManifest 里没找到包名 sh.paseo.debug")
+                  else:
+                      print("  包名: sh.paseo.debug ✓")
+          if failures:
+              for f in failures:
+                  print(f"::error::{f}")
+              sys.exit(1)
+          print("✅ 独立运行断言通过：JS 已内嵌（assets/index.android.bundle），包名 sh.paseo.debug")
+          PY
+
+      # 单 ABI 断言（票 02 军令，票 03 保留）：解包看 APK 的 lib/ 下只有 arm64-v8a 一个 ABI 目录，
       # 且 lib 非空（防「abiFilters 误配成空集」这种静默瘦身）。
       - name: Assert APK contains only arm64-v8a
         run: |
           set -euo pipefail
           shopt -s nullglob
-          apks=(packages/app/android/app/build/outputs/apk/debug/*.apk)
+          apks=(packages/app/android/app/build/outputs/apk/release/*.apk)
           if [ ${#apks[@]} -eq 0 ]; then
-            echo "::error::没找到 debug APK（packages/app/android/app/build/outputs/apk/debug/*.apk）"
+            echo "::error::没找到 release APK（packages/app/android/app/build/outputs/apk/release/*.apk）"
             exit 1
           fi
           for apk in "${apks[@]}"; do
@@ -195,10 +303,10 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           done
 
-      - name: Upload dev APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: paseo-dev-apk-arm64-v8a-run${{ github.run_number }}
-          path: packages/app/android/app/build/outputs/apk/**/*.apk
+          name: paseo-release-apk-arm64-v8a-run${{ github.run_number }}
+          path: packages/app/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 7
