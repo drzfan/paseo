@@ -5,6 +5,7 @@ import {
 } from "@/composer/editing-session";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
+  Platform,
   View,
   Text,
   useWindowDimensions,
@@ -85,15 +86,21 @@ import {
   computeCanStartDictation,
   resolveComposerSurfacePresentation,
   resolveComposerSurfaceText,
+  resolveImeSendInputProps,
   resolveRetainedSelection,
   runAlternateSendAction,
   runDefaultSendAction,
+  runImeSubmitAction,
   runMessageInputKeyboardAction,
   stopRealtimeVoice,
 } from "./state";
 
 const DEFAULT_SEND_KEYS: ShortcutKey[][] = [["Enter"]];
 const COMPOSER_INPUT_DATASET = { composerInput: "" } as const;
+// The IME action key (声谕 ↙, Gboard send) submits through the Send button's path on Android.
+// Web keeps its own Enter handler (`handleDesktopKeyPressImpl`) and iOS has its own submit
+// track (`useIosHardwareKeyboardSubmit`), so the props stay Android-only.
+const imeSendEnabled = Platform.OS === "android";
 
 export interface AttachmentMenuItem {
   id: string;
@@ -628,6 +635,7 @@ interface ComposerTextSurfaceProps {
   placeholder: string;
   accessibilityLabel: string;
   onChangeText: (text: string) => void;
+  onSubmitEditing: () => void;
   onFocus: () => void;
   onBlur: () => void;
   editable: boolean;
@@ -703,6 +711,7 @@ function ComposerTextSurface(props: ComposerTextSurfaceProps): React.ReactElemen
         scrollEnabled={props.scrollEnabled}
         editable={props.editable}
         onKeyPress={props.onKeyPress}
+        {...resolveImeSendInputProps(imeSendEnabled, props.onSubmitEditing)}
         onSelectionChange={props.onSelectionChange}
         onPasteImages={props.onPasteImages}
         onPasteError={props.onPasteError}
@@ -946,7 +955,7 @@ interface SendMessageContext {
   exitFullscreen: () => void;
 }
 
-function sendMessageImpl(ctx: SendMessageContext): void {
+export function sendMessageImpl(ctx: SendMessageContext): void {
   const trimmed = ctx.value.trim();
   if (
     !trimmed &&
@@ -1691,6 +1700,29 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       });
     }, [defaultSendBehavior, isAgentRunning, onQueue, handleQueueMessage, handleSendMessage]);
 
+    // Android IME action key (声谕 ↙, Gboard send). Same guards as the web Enter path, then
+    // the Send button's own path — fullscreen exit and height reset come with it.
+    const handleImeSubmit = useCallback(() => {
+      runImeSubmitAction({
+        disabled,
+        isSubmitDisabled,
+        isSubmitLoading,
+        value: textInputRef.current?.getText() ?? valueRef.current,
+        attachments,
+        hasExternalContent,
+        allowEmptySubmit,
+        submit: handleDefaultSendAction,
+      });
+    }, [
+      allowEmptySubmit,
+      attachments,
+      disabled,
+      handleDefaultSendAction,
+      hasExternalContent,
+      isSubmitDisabled,
+      isSubmitLoading,
+    ]);
+
     const handleAlternateSendAction = useCallback(() => {
       runAlternateSendAction({
         defaultSendBehavior,
@@ -1999,6 +2031,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
             placeholder={placeholder ?? t("composer.placeholders.fallback")}
             accessibilityLabel={t(mode.accessibilityLabelKey)}
             onChangeText={handleInputChange}
+            onSubmitEditing={handleImeSubmit}
             onFocus={handleInputFocus}
             onBlur={handleInputBlur}
             editable={!isDictating && !isRealtimeVoiceForCurrentAgent && !disabled}
@@ -2029,6 +2062,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         t,
         mode.accessibilityLabelKey,
         handleInputChange,
+        handleImeSubmit,
         handleInputFocus,
         handleInputBlur,
         isDictating,
