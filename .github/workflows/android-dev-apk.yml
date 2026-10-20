@@ -1,0 +1,204 @@
+name: Android Dev APK (local prebuild + gradle)
+
+# imesend 战役票 02：GHA 本地 prebuild + gradle assembleDebug 出 dev APK（路 B，零 secrets）。
+#
+# 与 android-apk-release.yml 的分工（勿混）：
+#   上游 android-apk-release.yml 是 **EAS 云构建调度器**（workflow 只调 `eas build` + 传产物），
+#   不是本地构建模板——本文件不抄它、也不改它。
+#   本文件只服务 imesend 分支上的 dev 包自测，不碰任何上游 workflow。
+#
+# 纪律出处：docs/android-build-lessons.md（红了禁取消重跑；每红拉 log 定谳；
+# 同类失败第二次必须变自动化防线）、.scratch/imesend/pitfalls-foreman.md（bun/npm 分界与缓存污染）。
+
+on:
+  push:
+    branches:
+      - "imesend*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同 ref 串行排队，不并行堆积；cancel-in-progress 保持 false：
+# 验收要看每轮 run 的红绿记录，不淘汰旧构建（lessons：取消重跑=碰运气循环入口）。
+concurrency:
+  group: android-dev-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # dev 变体：app.config.js:10 读 APP_VARIANT，development → 包名 sh.paseo.debug（与生产 sh.paseo 共存）。
+  # 全局设置，prebuild（定包名）与 gradle（定 applicationId）两步都能拿到。
+  APP_VARIANT: development
+  CI: "true"
+  EXPO_NO_TELEMETRY: "1"
+
+jobs:
+  dev-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ---- JS 依赖链（全线 bun） -------------------------------------------------
+      # Node 只用于跑构建 script（build:app-deps / prebuild 的 node 侧）。
+      # 注意：**不开 setup-node 的 npm cache**，也不跑 npm ci / npm install——
+      # 装依赖唯一入口是 bun install（lockfile 只认 bun.lock）。
+      - name: Set up Node 22 (no npm cache on purpose)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # 与本机生成 bun.lock（lockfileVersion 2）的版本一致，避免 lockfile 语义漂移。
+          bun-version: "1.4.2"
+
+      # 第一版**不开 bun install cache**：bun hardlink backend 下 patch-package 原地改文件
+      # 会穿透硬链污染 ~/.bun/install/cache（pitfalls-foreman 首条），缓存会把污染带回下一轮。
+      # runner 全新、cache 空 = 天然 clean，这才是 patch 能稳定 apply 的前提。
+      - name: Install JS dependencies (bun, frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      # bun hoist 布局下 expo-module-scripts 只在 root node_modules，
+      # expo-two-way-audio 的 tsconfig typeRoots 是包内相对路径（npm 时代假设）→ tsc 必红。
+      # 一条 symlink 补位（零 diff 污染），见 pitfalls-foreman「expo-module-scripts-types路径假设」。
+      - name: Relink expo-module-scripts for expo-two-way-audio
+        run: |
+          set -euo pipefail
+          mkdir -p packages/expo-two-way-audio/node_modules
+          ln -sfn ../../../node_modules/expo-module-scripts \
+            packages/expo-two-way-audio/node_modules/expo-module-scripts
+          ls -l packages/expo-two-way-audio/node_modules/expo-module-scripts
+
+      # bun 默认不跑第三方依赖的 postinstall（trustedDependencies 白名单语义），而 packages/app 显式 opt-in 了
+      # code highlight（package.json 的 "enriched-markdown".enableCodeHighlight=true）——
+      # 缺 tree-sitter 语法源码时 gradle 在 react-native-enriched-markdown/android/build.gradle:146 直接 throw
+      # （首轮 run 39409293946 的定谳："code highlighting is enabled but the tree-sitter grammars are not installed"）。
+      # 处理：显式跑它自带的 postinstall（从 registry.npmjs.org + github.com 拉语法源码），并用 .stamp 断言兜底——
+      # 缺资产在这里红，而不是 3 分钟后在 gradle 里红（定谳成本前置）。
+      # INIT_CWD 决定 consumer 配置查找入口：指仓根 → 走 workspace 成员（packages/app）→ enableMath=false，跳过 iOS RaTeX 下载。
+      - name: Vendor enriched-markdown native assets (tree-sitter grammars)
+        run: |
+          set -euo pipefail
+          INIT_CWD="$PWD" node node_modules/react-native-enriched-markdown/postinstall.mjs
+          vendor_dir=node_modules/react-native-enriched-markdown/cpp/highlight/vendor
+          test -f "${vendor_dir}/grammars/.stamp" || {
+            echo "::error::tree-sitter 语法 .stamp 缺失——下载失败（查 registry.npmjs.org / github.com 连通性）"
+            exit 1
+          }
+          du -sh "${vendor_dir}"
+
+      # 必须 `npm run`：bun run 会把 `--workspace=X` 展开成超长命令行 → E2BIG（pitfalls-foreman）。
+      # npm 这里只跑 script、不碰 lockfile，不属于混装。
+      - name: Build app dependencies
+        run: npm run build:app-deps
+
+      - name: Build terminal webview bundle
+        run: npm run build:terminal-webview --workspace=@getpaseo/app
+
+      # 第一版不跑单测：本机基线 4 红 + 2 flaky（pitfalls-foreman）会挡住构建链调试，
+      # 单测由票 01 本地双层把门。构建链绿后再议加回。
+      # ---- Native 构建链 ---------------------------------------------------------
+      # packages/app/android/ 不入 git（packages/app/.gitignore 的 `/android`），
+      # CI 每轮从零 prebuild；`--clean` 固定参数保证产物一致。
+      - name: Expo prebuild (android, development variant)
+        working-directory: packages/app
+        run: npx expo prebuild --platform android --clean --non-interactive
+
+      - name: Assert generated android project shape
+        run: |
+          set -euo pipefail
+          test -f packages/app/android/gradlew || { echo "::error::prebuild 未生成 gradlew"; exit 1; }
+          test -f packages/app/android/app/build.gradle || { echo "::error::prebuild 未生成 app/build.gradle"; exit 1; }
+          echo "--- generated applicationId ---"
+          grep -nE 'applicationId|namespace|ndkVersion' packages/app/android/app/build.gradle || true
+          echo "--- generated reactNativeArchitectures ---"
+          grep -n 'reactNativeArchitectures' packages/app/android/gradle.properties || true
+
+      # 单 ABI 军令（票面）：RN/Expo 标准旋钮就是 reactNativeArchitectures。
+      # 实据（node_modules/@react-native/gradle-plugin .../PropertyUtils.kt:30 REACT_NATIVE_ARCHITECTURES）
+      # → gradle -P 属性覆盖 gradle.properties 里的多 ABI 默认值；xime 的 -PabiFilter 是它自家属性名，不适用。
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          # gradle cache 放在 prebuild 之后：android/ 是生成物，checkout 时 hashFiles 为空，
+          # 提前开 cache 会因「无可哈希的 gradle 文件」直接炸。
+          cache: "gradle"
+          cache-dependency-path: |
+            packages/app/android/**/*.gradle*
+            packages/app/android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      # NDK/CMake 不手工钉版本（军令：信 prebuild 产物版本钉）。
+      # 实据：generated app/build.gradle 写的是 `ndkVersion rootProject.ext.ndkVersion`，
+      # 真实版本由 expo-root-project 插件按 versionCatalog 默认值注入（Expo SDK 54 下为 27.1.12297006），
+      # 生成物里没有字面量可解析 → 交给 AGP 自动下载（android.builder.sdkDownload 默认开，license 已由 setup-android 接受）。
+      # 这里只做预检打印：红了能一眼看出 SDK/工具链实际版本。
+      - name: Preflight toolchain facts
+        run: |
+          set -euo pipefail
+          echo "--- gradle wrapper ---"
+          grep distributionUrl packages/app/android/gradle/wrapper/gradle-wrapper.properties
+          echo "--- ndkVersion source (expo-root-project default) ---"
+          grep -rn 'getVersionOrDefault("ndkVersion"' node_modules/expo-modules-autolinking \
+            --include=ExpoRootProjectPlugin.kt || echo "(未找到插件默认值，交给 AGP 自行解析)"
+          echo "--- installed SDK packages ---"
+          sdkmanager --list_installed | sed -n '1,30p'
+
+      - name: Build debug APK (arm64-v8a only)
+        working-directory: packages/app/android
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon -PreactNativeArchitectures=arm64-v8a
+
+      # 单 ABI 断言（票面 AC）：解包看 APK 的 lib/ 下只有 arm64-v8a 一个 ABI 目录，
+      # 且 lib 非空（防「abiFilters 误配成空集」这种静默瘦身）。
+      - name: Assert APK contains only arm64-v8a
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(packages/app/android/app/build/outputs/apk/debug/*.apk)
+          if [ ${#apks[@]} -eq 0 ]; then
+            echo "::error::没找到 debug APK（packages/app/android/app/build/outputs/apk/debug/*.apk）"
+            exit 1
+          fi
+          for apk in "${apks[@]}"; do
+            echo "=== $apk"
+            ls -lh "$apk"
+            abis=$(unzip -l "$apk" | awk '$4 ~ /^lib\// { split($4, p, "/"); print p[2] }' | sort -u)
+            echo "--- APK lib/ ABI 目录 ---"
+            echo "${abis}"
+            if [ -z "${abis}" ]; then
+              echo "::error::APK 内 lib/ 为空——单 ABI 配置把 native 库全滤掉了"
+              exit 1
+            fi
+            if [ "${abis}" != "arm64-v8a" ]; then
+              echo "::error::APK 含多个/非预期 ABI：${abis}（军令要求仅 arm64-v8a）"
+              exit 1
+            fi
+            echo "✅ 单 ABI 断言通过：仅 arm64-v8a"
+            {
+              echo "| APK | 大小 | lib/ ABI |"
+              echo "|---|---|---|"
+              echo "| $(basename "$apk") | $(du -h "$apk" | cut -f1) | ${abis} |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload dev APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: paseo-dev-apk-arm64-v8a-run${{ github.run_number }}
+          path: packages/app/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 7

@@ -1,5 +1,6 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
+import type { ComposerAttachment } from "@/attachments/types";
 import type { MessagePayload, TextReplacement } from "@/composer/types";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 
@@ -133,6 +134,60 @@ export function runAlternateSendAction(ctx: SendActionContext): void {
   if (ctx.isAgentRunning && ctx.onQueue) {
     ctx.handleQueueMessage();
   }
+}
+
+export interface ComposerImeSendInputProps {
+  returnKeyType: "send";
+  blurOnSubmit: false;
+  submitBehavior: "submit";
+  onSubmitEditing: () => void;
+}
+
+/**
+ * Input props that turn an IME action key into a composer submit (docs/android-ime-send.md).
+ *
+ * React Native only dispatches `onSubmitEditing` when it resolves `submitBehavior` to
+ * `submit`/`blurAndSubmit`. On a multiline input `blurOnSubmit={false}` resolves to
+ * `newline`, and that path also keeps `IME_FLAG_NO_ENTER_ACTION` set, so the IME never shows
+ * an action key and the event is dead: `submitBehavior="submit"` is what actually delivers
+ * it while still keeping the keyboard up (submit without blur — the behavior
+ * `blurOnSubmit={false}` was chosen for). `blurOnSubmit={false}` stays declared as the intent
+ * for renderers that predate `submitBehavior`.
+ */
+export function resolveImeSendInputProps(
+  enabled: boolean,
+  onSubmitEditing: () => void,
+): ComposerImeSendInputProps | undefined {
+  if (!enabled) return undefined;
+  return { returnKeyType: "send", blurOnSubmit: false, submitBehavior: "submit", onSubmitEditing };
+}
+
+interface ImeSubmitContext {
+  disabled: boolean;
+  isSubmitDisabled: boolean;
+  isSubmitLoading: boolean;
+  value: string;
+  attachments: readonly ComposerAttachment[];
+  hasExternalContent: boolean;
+  allowEmptySubmit: boolean;
+}
+
+/**
+ * IME submit shares the Send button's path, so it needs both the web Enter handler's gates
+ * (`disabled`, submit-disabled, submit-loading) and the empty-input no-op `sendMessageImpl`
+ * performs. `allowEmptySubmit` (hosts that accept an empty message) bypasses the content gate.
+ */
+export function canSubmitFromIme(ctx: ImeSubmitContext): boolean {
+  if (ctx.disabled || ctx.isSubmitDisabled || ctx.isSubmitLoading) return false;
+  if (ctx.allowEmptySubmit) return true;
+  return ctx.value.trim().length > 0 || ctx.attachments.length > 0 || ctx.hasExternalContent;
+}
+
+/** Returns whether the IME action was consumed, i.e. a submit was dispatched. */
+export function runImeSubmitAction(ctx: ImeSubmitContext & { submit: () => void }): boolean {
+  if (!canSubmitFromIme(ctx)) return false;
+  ctx.submit();
+  return true;
 }
 
 export function runMessageInputKeyboardAction(
