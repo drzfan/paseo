@@ -65,6 +65,20 @@ jobs:
       - name: Install JS dependencies (bun, frozen lockfile)
         run: bun install --frozen-lockfile
 
+      # 同一条 bun 语义的第二个受害者（run 40525390893 红）：root package.json 无 trustedDependencies 白名单，
+      # @shopify/react-native-skia 的 postinstall（scripts/install-libs.js，把 react-native-skia-android 的预构建
+      # libs/* 拷进包内 libs/android/）被 bun 静默跳过 → gradle `:shopify_react-native-skia:configureCMake`
+      # 报 "Could not find libskia.a ... Skia prebuilt binaries not found"。上游走 EAS 云构建（npm 系装包，
+      # postinstall 全跑）所以上游 workflow 里没有这一步。勿删。
+      - name: Install Skia prebuilt binaries (bun skips its postinstall)
+        run: |
+          set -euo pipefail
+          npx install-skia
+          test -f node_modules/@shopify/react-native-skia/libs/android/arm64-v8a/libskia.a || {
+            echo "::error::libskia.a 缺失——install-skia 没拷成功，gradle 会在 configureCMake 红"
+            exit 1
+          }
+
       # bun hoist 布局下 expo-module-scripts 只在 root node_modules，
       # expo-two-way-audio 的 tsconfig typeRoots 是包内相对路径（npm 时代假设）→ tsc 必红。
       # 一条 symlink 补位（零 diff 污染），见 pitfalls-foreman「expo-module-scripts-types路径假设」。
