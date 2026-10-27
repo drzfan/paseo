@@ -99,8 +99,9 @@ jobs:
       - name: Build app dependencies
         run: npm run build:app-deps
 
-      - name: Build terminal webview bundle
-        run: npm run build:terminal-webview --workspace=@getpaseo/app
+      # 原「Build terminal webview bundle」步骤已删（rebase-0132）：0.13 上游 #7639 移除 legacy
+      # terminal renderer 时把 `build:terminal-webview` script 一并删了（v0.13.2 的 packages/app/package.json
+      # 里 grep 计数 0），残留步骤会在 GHA 直接 `Missing script` 红（run 40522395102）。勿加回。
 
       # 第一版不跑单测：本机基线 4 红 + 2 flaky（pitfalls-foreman）会挡住构建链调试，
       # 单测由票 01 本地双层把门。构建链绿后再议加回。
