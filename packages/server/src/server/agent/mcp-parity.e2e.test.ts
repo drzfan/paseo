@@ -404,6 +404,8 @@ describe("Suite A: Core Fixes", () => {
           expect(parseAgentMessage(callerPrompts[0]).source).toEqual({
             kind: "agent-notification",
             agentId: childId,
+            // 上游 21e7ccb03（restore finish notifications after restart）给通知 source
+            // 加了 serverId 以区分本地/远端子 agent；其自身 e2e 断言未跟进，此处补齐。
             serverId: daemon.daemon.getServerId(),
             title: "Notification child",
             event: "finished",
@@ -518,6 +520,7 @@ describe("Suite A: Core Fixes", () => {
         expect(notification.source).toEqual({
           kind: "agent-notification",
           agentId: childId,
+          // 同上：serverId 随上游 21e7ccb03 进入通知 source。
           serverId: daemon.daemon.getServerId(),
           title: "Watched child",
           event: "errored",
@@ -583,6 +586,7 @@ describe("Suite A: Core Fixes", () => {
               event: outcome,
               sender: {
                 id: childId,
+                // 通知 source 带 serverId 后，timeline 投影的 sender 同步携带（上游 21e7ccb03）。
                 serverId: daemonHandle.daemon.getServerId(),
                 title: "Follow-up child",
               },
