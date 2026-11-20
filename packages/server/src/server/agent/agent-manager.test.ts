@@ -1069,27 +1069,6 @@ test("steers a send that arrives while the previous turn is still starting", asy
     cwd: process.cwd(),
   });
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-starting-"));
-test("no-turn steer returns inactive without replacing once the ledger converges idle", async () => {
-  class ConvergingNoTurnSession extends SteeringTestSession {
-    override async steerActiveTurn(
-      _prompt: AgentPromptInput,
-      _options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
-    ): Promise<import("./agent-sdk-types.js").SteerResult> {
-      this.steerCount += 1;
-      // Simulate the drift resolving mid-admission: the provider answers
-      // "no-turn" while the turn-end event lands and drains before the
-      // manager maps the result.
-      this.pushEvent({
-        type: "turn_completed",
-        provider: this.provider,
-        turnId: `active-turn-${this.startCount}`,
-      });
-      return { status: "no-turn" };
-    }
-  }
-  const session = new ConvergingNoTurnSession({ provider: "codex", cwd: process.cwd() });
-  let fallbackEntered = false;
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-no-turn-steer-"));
   const manager = new AgentManager({
     clients: {
       codex: new (class extends TestAgentClient {
@@ -1101,12 +1080,6 @@ test("no-turn steer returns inactive without replacing once the ledger converges
     logger,
   });
   let agentId: string | null = null;
-    beforeSteerUnavailableFallback: async () => {
-      fallbackEntered = true;
-    },
-    logger,
-  });
-  let agentId: null | string = null;
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
@@ -1150,23 +1123,46 @@ test("no-turn steer returns inactive without replacing once the ledger converges
   }
 });
 
-test("starts its own turn when the previous turn fails to start under a steer send", async () => {
-  const startHeld = deferred<void>();
-  class FailingFirstStartSession extends SteeringTestSession {
-    override async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
-      if (prompt === "FIRST") {
-        this.startPrompts.push(prompt);
-        await startHeld.promise;
-        throw new Error("first start failed");
-      }
-      return await super.startTurn(prompt);
+test("no-turn steer returns inactive without replacing once the ledger converges idle", async () => {
+  class ConvergingNoTurnSession extends SteeringTestSession {
+    override async steerActiveTurn(
+      _prompt: AgentPromptInput,
+      _options: import("./agent-sdk-types.js").SteerActiveTurnOptions,
+    ): Promise<import("./agent-sdk-types.js").SteerResult> {
+      this.steerCount += 1;
+      // Simulate the drift resolving mid-admission: the provider answers
+      // "no-turn" while the turn-end event lands and drains before the
+      // manager maps the result.
+      this.pushEvent({
+        type: "turn_completed",
+        provider: this.provider,
+        turnId: `active-turn-${this.startCount}`,
+      });
+      return { status: "no-turn" };
     }
   }
-  const session = new FailingFirstStartSession({
-    provider: "codex",
-    cwd: process.cwd(),
+  const session = new ConvergingNoTurnSession({ provider: "codex", cwd: process.cwd() });
+  let fallbackEntered = false;
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-no-turn-steer-"));
+  const manager = new AgentManager({
+    clients: {
+      codex: new (class extends TestAgentClient {
+        override async createSession(): Promise<AgentSession> {
+          return session;
+        }
+      })(),
+    },
+    beforeSteerUnavailableFallback: async () => {
+      fallbackEntered = true;
+    },
+    logger,
   });
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-failed-start-"));
+  let agentId: null | string = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
     const run = manager.streamAgent(agent.id, "initial");
     void (async () => {
       for await (const _event of run) {
@@ -1191,10 +1187,23 @@ test("starts its own turn when the previous turn fails to start under a steer se
   }
 });
 
-test("no-turn steer retries tokenless while the ledger still claims the stale token, then trusts the provider", async () => {
-  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
-  session.steerResult = "no-turn";
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-no-turn-stale-"));
+test("starts its own turn when the previous turn fails to start under a steer send", async () => {
+  const startHeld = deferred<void>();
+  class FailingFirstStartSession extends SteeringTestSession {
+    override async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
+      if (prompt === "FIRST") {
+        this.startPrompts.push(prompt);
+        await startHeld.promise;
+        throw new Error("first start failed");
+      }
+      return await super.startTurn(prompt);
+    }
+  }
+  const session = new FailingFirstStartSession({
+    provider: "codex",
+    cwd: process.cwd(),
+  });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-failed-start-"));
   const manager = new AgentManager({
     clients: {
       codex: new (class extends TestAgentClient {
@@ -1206,7 +1215,6 @@ test("no-turn steer retries tokenless while the ledger still claims the stale to
     logger,
   });
   let agentId: string | null = null;
-  let agentId: null | string = null;
   try {
     const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
@@ -1232,6 +1240,31 @@ test("no-turn steer retries tokenless while the ledger still claims the stale to
     expect(session.interruptCount).toBe(0);
   } finally {
     startHeld.resolve();
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("no-turn steer retries tokenless while the ledger still claims the stale token, then trusts the provider", async () => {
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  session.steerResult = "no-turn";
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-no-turn-stale-"));
+  const manager = new AgentManager({
+    clients: {
+      codex: new (class extends TestAgentClient {
+        override async createSession(): Promise<AgentSession> {
+          return session;
+        }
+      })(),
+    },
+    logger,
+  });
+  let agentId: null | string = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
     const run = manager.streamAgent(agent.id, "initial");
     void (async () => {
       for await (const _event of run) {
@@ -1301,6 +1334,64 @@ test("no-turn steer retry converts a turn-boundary race into a successful steer"
     expect(session.steerCount).toBe(2);
     expect(session.interruptCount).toBe(0);
   } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("starts its own turn when the previous turn fails to start under a steer send", async () => {
+  const startHeld = deferred<void>();
+  class FailingFirstStartSession extends SteeringTestSession {
+    override async startTurn(prompt: AgentPromptInput): Promise<{ turnId: string }> {
+      if (prompt === "FIRST") {
+        this.startPrompts.push(prompt);
+        await startHeld.promise;
+        throw new Error("first start failed");
+      }
+      return await super.startTurn(prompt);
+    }
+  }
+  const session = new FailingFirstStartSession({
+    provider: "codex",
+    cwd: process.cwd(),
+  });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-steer-failed-start-"));
+  const manager = new AgentManager({
+    clients: {
+      codex: new (class extends TestAgentClient {
+        override async createSession(): Promise<AgentSession> {
+          return session;
+        }
+      })(),
+    },
+    logger,
+  });
+  let agentId: string | null = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    const steerOptions = (clientMessageId: string) => ({
+      replaceRunning: true,
+      activeTurnBehavior: "steer" as const,
+      runOptions: { clientMessageId },
+    });
+    await startAgentRun(manager, agent.id, "FIRST", logger, steerOptions("first-client"));
+    const second = startAgentRun(
+      manager,
+      agent.id,
+      "SECOND",
+      logger,
+      steerOptions("second-client"),
+    );
+
+    startHeld.resolve();
+    await expect(second).resolves.toEqual({ disposition: "turn_started" });
+    await vi.waitFor(() => expect(session.startPrompts).toEqual(["FIRST", "SECOND"]));
+    expect(session.interruptCount).toBe(0);
+  } finally {
+    startHeld.resolve();
     if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
     rmSync(workdir, { recursive: true, force: true });
   }

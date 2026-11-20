@@ -657,8 +657,6 @@ export function resolveConfigFromPersisted(
       ? mergeDerivedProviderOverrides(staticProviderOverrides ?? {}, profileDerivation.derived)
       : undefined;
 
-  const overrideControlledPaths = resolveOverrideControlledPaths(env, cli, speech.providers);
-
   return {
     ...settings,
     listen: resolveListenAddress(env, cli, persisted),

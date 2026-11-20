@@ -17,7 +17,6 @@ import {
   writePrivateFileAtomicSync,
 } from "./private-files.js";
 import { DEFAULT_PROFILES_DIR } from "./profile-provider-deriver.js";
-import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protocol/agent-profile";
 import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
 import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";

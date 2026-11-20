@@ -80,6 +80,7 @@ function outcome(): WaitForFinishResult {
         lastStatus: "closed",
       },
       ["codex"],
+      (_provider: never, own: never) => (own ?? {}) as never,
     ),
     lastMessage: "task output",
     error: null,

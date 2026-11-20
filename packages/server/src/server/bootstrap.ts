@@ -603,7 +603,7 @@ function logProfileDerivationFailures(
   }
 }
 
-function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDaemonConfig {
+function createInitialMutableDaemonConfig(config: ResolvedDaemonSettings): MutableDaemonConfig {
   const providers = config.providerOverrides ?? {};
 
   const initialConfig: MutableDaemonConfig = {
@@ -651,7 +651,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
 }
 
 function applyProfileDerivationToMutableConfig(
-  config: PaseoDaemonConfig,
+  config: ResolvedDaemonSettings,
   initialConfig: MutableDaemonConfig,
 ): void {
   if (config.profileDerivation === undefined) return;

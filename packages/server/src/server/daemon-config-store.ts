@@ -221,6 +221,9 @@ function foldConfigProfiles<T extends { agentProfiles?: AgentProfile[] }>(input:
 export function toWireDaemonConfig(config: MutableDaemonConfig): MutableDaemonConfig {
   if (!config.agentProfiles) return config;
   return { ...config, agentProfiles: config.agentProfiles.map(withLegacyProfileFeatureValues) };
+}
+
+/**
  * M2 guard: keep directory-derived providers out of config.json.
  *
  * The mutable config carries derived declarations (they are regenerated from the
